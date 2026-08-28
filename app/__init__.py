@@ -89,7 +89,7 @@ def create_app():
     @app.get("/dashboard")
     @protected
     def dashboard():
-        return page("状态", DASHBOARD, status=scheduler_status(), dashboard=build_dashboard())
+        return page("状态", DASHBOARD, status=scheduler_status(), dashboard=build_dashboard(request.args.get("account", type=int)))
 
     @app.route("/settings", methods=["GET", "POST"])
     @protected
@@ -154,7 +154,20 @@ def create_app():
         result = check_session(account_id)
         flash(f"会话有效，当日返回 {result['task_count']} 个任务" if result["valid"] else f"会话检测失败：{result['error']}")
         log_event("CAMPUS_SESSION_CHECKED", f"Campus account {account_id}: {'valid' if result['valid'] else 'invalid'}")
+        if request.form.get("next") == "dashboard":
+            return redirect(url_for("dashboard", account=account_id))
         return redirect(url_for("campus_accounts"))
+
+    @app.post("/accounts/<int:account_id>/toggle")
+    @protected
+    def campus_account_toggle(account_id):
+        account = get_account(account_id, include_cookie=True)
+        if not account:
+            abort(404)
+        update_account(account_id, account["name"], "", request.form.get("enabled") == "true")
+        log_event("CAMPUS_ACCOUNT_AUTOMATION", f"Campus account {account_id} automation updated")
+        flash("该账号的自动签到已更新")
+        return redirect(url_for("dashboard", account=account_id))
 
     @app.post("/accounts/<int:account_id>/delete")
     @protected

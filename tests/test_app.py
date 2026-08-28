@@ -31,7 +31,7 @@ class AppTest(unittest.TestCase):
         response = self.client.get("/dashboard")
         self.assertEqual(response.status_code, 200)
         page = response.get_data(as_text=True)
-        for label in ("今日及即将开始", "最近设备位置", "学校签到记录", "当前签到账号", "自动签到成功"):
+        for label in ("今日及即将开始", "最近设备位置", "签到记录", "+添加签到账号", "自动签到成功"):
             self.assertIn(label, page)
     def test_bad_login(self):
         response = self.client.post("/login", data={"csrf": self.csrf(), "username": "admin", "password": "wrong"})
@@ -41,8 +41,9 @@ class AppTest(unittest.TestCase):
         self.login()
         with self.client.session_transaction() as current_session:
             token = current_session["csrf"]
-        cookie = "MOD_AUTH_CAS=private-test-cookie"
-        response = self.client.post("/accounts", data={"csrf": token, "name": "测试账号", "session_cookie": cookie, "auto_enabled": "true"})
+        cookie_value = "private-test-cookie"
+        cookie = f"MOD_AUTH_CAS={cookie_value}"
+        response = self.client.post("/accounts", data={"csrf": token, "name": "测试账号", "session_cookie": cookie_value, "auto_enabled": "true"})
         self.assertEqual(response.status_code, 302)
         page = self.client.get("/accounts").get_data(as_text=True)
         self.assertIn("测试账号", page)
@@ -54,6 +55,14 @@ class AppTest(unittest.TestCase):
         with connect() as db:
             updated = db.execute("SELECT name,auto_enabled,session_cookie FROM campus_accounts WHERE id=?", (account["id"],)).fetchone()
         self.assertEqual((updated["name"], updated["auto_enabled"], updated["session_cookie"]), ("新名称", 0, cookie))
+        toggle = self.client.post(f"/accounts/{account['id']}/toggle", data={"csrf": token, "enabled": "true"})
+        self.assertEqual(toggle.status_code, 302)
+        with connect() as db:
+            self.assertEqual(db.execute("SELECT auto_enabled FROM campus_accounts WHERE id=?", (account["id"],)).fetchone()[0], 1)
+        dashboard = self.client.get(f"/dashboard?account={account['id']}").get_data(as_text=True)
+        self.assertIn("刷新并检测会话", dashboard)
+        self.assertIn("关闭自动签到", dashboard)
+        self.assertIn("签到方式", dashboard)
         self.client.post(f"/accounts/{account['id']}/delete", data={"csrf": token})
         with connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM campus_accounts").fetchone()[0], 0)

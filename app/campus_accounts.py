@@ -92,7 +92,9 @@ def _validate(name, session_cookie):
     session_cookie = str(session_cookie or "").strip()
     if not name or len(name) > 80:
         raise ValueError("账号名称必须为 1–80 个字符")
-    if not session_cookie or "=" not in session_cookie or len(session_cookie) > 12_000:
+    if session_cookie and "=" not in session_cookie:
+        session_cookie = f"MOD_AUTH_CAS={session_cookie}"
+    if not session_cookie or len(session_cookie) > 12_000:
         raise ValueError("Cookie 格式无效")
     if "\r" in session_cookie or "\n" in session_cookie:
         raise ValueError("Cookie 不得包含换行符")

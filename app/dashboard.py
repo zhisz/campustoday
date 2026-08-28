@@ -20,50 +20,61 @@ HISTORY_GROUPS = (
 )
 
 
-def build_dashboard():
+def build_dashboard(account_id=None):
+    account_rows = list_accounts(include_cookie=True)
+    selected = next((account for account in account_rows if account["id"] == account_id), None)
+    selected = selected or (account_rows[0] if account_rows else None)
     with connect() as db:
         location_row = db.execute(
             "SELECT latitude,longitude,accuracy,observed_at,received_at,verified,reason,address,coordinate_system "
             "FROM locations ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        automatic_successes = db.execute("SELECT COUNT(*) AS count FROM checkins WHERE status='SUCCESS'").fetchone()["count"]
-        automatic_records = [
-            dict(row) for row in db.execute(
-                "SELECT date,task_name,status,submit_time,response_message,account_name FROM checkins ORDER BY id DESC LIMIT 8"
-            ).fetchall()
-        ]
+        automatic_successes = 0
+        automatic_task_ids = set()
+        if selected:
+            automatic_successes = db.execute(
+                "SELECT COUNT(*) AS count FROM checkins WHERE account_id=? AND status='SUCCESS'", (selected["id"],)
+            ).fetchone()["count"]
+            automatic_task_ids = {
+                row["task_id"] for row in db.execute(
+                    "SELECT task_id FROM checkins WHERE account_id=? AND status='SUCCESS' AND task_id IS NOT NULL",
+                    (selected["id"],),
+                ).fetchall()
+            }
 
     location = _location_view(dict(location_row)) if location_row else None
     result = {
         "location": location,
         "automatic_successes": automatic_successes,
-        "automatic_records": automatic_records,
         "upcoming": [],
         "school_history": [],
         "school_signed_count": 0,
         "school_error": None,
         "accounts": [],
+        "selected_account": None,
         "history_month": datetime.now(LOCAL_TZ).strftime("%Y-%m"),
     }
 
-    errors = []
-    for account in list_accounts(include_cookie=True):
+    for account in account_rows:
+        result["accounts"].append(_account_view(account, account["session_status"] == "VALID"))
+    if selected:
         session_valid = False
         try:
-            client = create_client(account["session_cookie"])
+            client = create_client(selected["session_cookie"])
             tasks = client.list_today()
-            result["upcoming"].extend(_task_view(task, account["name"]) for task in tasks if not task.completed)
+            result["upcoming"] = [_task_view(task) for task in tasks if not task.completed]
             history = client.month_history(result["history_month"])
-            records, count = _flatten_history(history.get("rows", []), result["history_month"], account["name"])
-            result["school_history"].extend(records)
-            result["school_signed_count"] += count
+            records, count = _flatten_history(history.get("rows", []), result["history_month"], automatic_task_ids)
+            result["school_history"] = records
+            result["school_signed_count"] = count
             session_valid = True
         except Exception as exc:
-            errors.append(f'{account["name"]}: {exc}')
-        result["accounts"].append(_account_view(account, session_valid))
-    result["school_history"].sort(key=lambda item: (item["date"], item["time"]), reverse=True)
-    result["school_history"] = result["school_history"][:50]
-    result["school_error"] = "；".join(errors) if errors else None
+            result["school_error"] = str(exc)
+        result["selected_account"] = _account_view(selected, session_valid)
+        for account in result["accounts"]:
+            account["selected"] = account["id"] == selected["id"]
+            if account["selected"]:
+                account["session_valid"] = session_valid
     return result
 
 
@@ -108,7 +119,7 @@ def _location_view(row):
     }
 
 
-def _task_view(task, account_name):
+def _task_view(task):
     now = datetime.now(LOCAL_TZ)
     start, end = _parse_datetime(task.start_time), _parse_datetime(task.end_time)
     if start and now < start:
@@ -123,17 +134,20 @@ def _task_view(task, account_name):
         "end": _format_datetime(task.end_time),
         "state": state,
         "tone": tone,
-        "account_name": account_name,
     }
 
 
-def _flatten_history(rows, year_month, account_name):
+def _flatten_history(rows, year_month, automatic_task_ids):
     records, signed_count = [], 0
     for day in rows:
         if not isinstance(day, dict):
             continue
-        day_number = str(day.get("dayInMonth") or "").zfill(2)
-        date = f"{year_month}-{day_number}" if day_number.strip("0") else year_month
+        raw_day = str(day.get("dayInMonth") or "").strip()
+        if raw_day.startswith(f"{year_month}-"):
+            date = raw_day
+        else:
+            day_number = raw_day.zfill(2)
+            date = f"{year_month}-{day_number}" if day_number.strip("0") else year_month
         for group, label, tone in HISTORY_GROUPS:
             items = day.get(group) or []
             if group in {"signedTasks", "codeRcvdTasks"}:
@@ -150,7 +164,7 @@ def _flatten_history(rows, year_month, account_name):
                     "tone": tone,
                     "time": _history_time(item),
                     "publisher": str(item.get("senderUserName") or "—"),
-                    "account_name": account_name,
+                    "automatic": str(item.get("signInstanceWid") or "") in automatic_task_ids,
                 })
     records.sort(key=lambda item: (item["date"], item["time"]), reverse=True)
     return records[:30], signed_count
