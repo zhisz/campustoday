@@ -1,13 +1,14 @@
 import os
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-
-from apscheduler.schedulers.background import BackgroundScheduler
 
 from campus.client import create_client
 from .db import get_setting, log_event, now_iso, set_settings
 
-scheduler = BackgroundScheduler(timezone=os.getenv("TZ", "Asia/Shanghai"))
+_lock = threading.Lock()
+_started = False
+_next_run = None
 
 
 def enabled() -> bool:
@@ -37,21 +38,32 @@ def poll():
 
 
 def start_scheduler():
-    if scheduler.running:
-        return
-    interval = max(1, int(os.getenv("QUERY_INTERVAL_MINUTES", "5")))
-    scheduler.add_job(poll, "interval", minutes=interval, id="attendance_poll", max_instances=1, coalesce=True)
-    scheduler.start()
+    global _started
+    with _lock:
+        if _started:
+            return
+        _started = True
+        threading.Thread(target=_loop, name="campustoday-scheduler", daemon=True).start()
+
+
+def _loop():
+    global _next_run
+    interval = max(1, int(os.getenv("QUERY_INTERVAL_MINUTES", "5"))) * 60
+    while True:
+        _next_run = datetime.now(timezone.utc) + timedelta(seconds=interval)
+        threading.Event().wait(interval)
+        try:
+            poll()
+        except Exception as exc:
+            log_event("SCHEDULER_ERROR", str(exc), "ERROR")
 
 
 def status():
-    job = scheduler.get_job("attendance_poll")
     return {
-        "running": scheduler.running,
+        "running": _started,
         "enabled": enabled(),
         "last_check": get_setting("last_check"),
         "last_success": get_setting("last_success"),
-        "next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
+        "next_run": _next_run.isoformat() if _next_run else None,
         "integration": os.getenv("CPDAILY_MODE", "disabled"),
     }
-
