@@ -1,6 +1,6 @@
 # campustoday
 
-今日校园晚查寝自动化服务的安全第一版。提供受密码保护的管理后台、SQLite 审计数据、后台调度、可信设备位置证明与校园 geofence。生产默认 `CPDAILY_MODE=disabled`，因为公开协议样本停留在 2021–2022 年；在验证学校 2026 年实际接口前不会提交任何签到。
+今日校园晚查寝自动化服务。提供受密码保护的管理后台、SQLite 审计数据、后台调度、可信设备位置证明与校园 geofence。江西理工大学 2026 年任务列表和详情协议已经过实机验证；提交接口的字段构造已从当前前端版本核对，但生产仍默认关闭提交。
 
 ## 本地测试
 
@@ -40,4 +40,6 @@ Content-Type: application/json
 
 ## 协议状态
 
-参考项目 `F-19-F/SWU-CpDaily` 最后提交于 2022-01-20。旧版使用 `getStuAttendacesInOneDay`、`detailSignInstance`、`getStuSignInfosByWeekMonth`、`submitSign`，以及 DES/AES/MD5 封装。它们仅保留为研究背景，没有直接复制进生产请求路径。启用真实集成前需要学校入口、获授权账号以及当前 App 的实际请求/响应样本。
+设置 `CPDAILY_MODE=jxust` 可启用只读任务轮询。登录会话通过 `CPDAILY_SESSION_COOKIE` 提供，不得写入 Git 或日志。提交还需要同时设置 `CPDAILY_SUBMIT_ENABLED=true`、完整可信设备资料和可信设备上传的新鲜位置证明；缺少任何一项都会拒绝提交。
+
+当前适配目标是 `prod_v2.1.2.312_1WtW`。已验证 `getStuAttendacesInOneDay` 与 `detailSignInstance`；`submitSign` 的请求字段已从该版本前端核对，但在本人完成一次合法开放任务的实机验收前不得打开生产提交开关。
