@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /srv/campustoday
 RUN addgroup --system campustoday && adduser --system --ingroup campustoday campustoday
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY vendor /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
 COPY app ./app
 COPY campus ./campus
 RUN chown -R campustoday:campustoday /srv/campustoday
