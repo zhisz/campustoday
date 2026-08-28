@@ -1,0 +1,39 @@
+name: campustoday
+services:
+  app:
+    build:
+      context: .
+    image: campustoday-app:${APP_VERSION:-local}
+    container_name: campustoday-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:${HOST_PORT:-3600}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 384M
+        reservations:
+          memory: 96M
+    networks:
+      - app
+
+networks:
+  app:
+    name: campustoday-app
+

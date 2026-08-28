@@ -1,0 +1,2 @@
+"""CampusToday protocol boundary."""
+
