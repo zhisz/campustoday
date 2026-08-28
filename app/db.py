@@ -65,6 +65,18 @@ def migrate():
         );
         INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
         """)
+        location_columns = {row["name"] for row in db.execute("PRAGMA table_info(locations)")}
+        for name, definition in (
+            ("proof_id", "TEXT"),
+            ("device_id", "TEXT"),
+            ("address", "TEXT"),
+            ("coordinate_system", "TEXT"),
+        ):
+            if name not in location_columns:
+                db.execute(f"ALTER TABLE locations ADD COLUMN {name} {definition}")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_proof_id ON locations(proof_id) WHERE proof_id IS NOT NULL")
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, CURRENT_TIMESTAMP)")
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, CURRENT_TIMESTAMP)")
 
 
 def log_event(event: str, message: str, level: str = "INFO", metadata=None):
@@ -98,4 +110,3 @@ def set_settings(values: dict[str, str]):
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
             [(key, value, at) for key, value in values.items()],
         )
-

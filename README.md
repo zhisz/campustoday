@@ -33,10 +33,10 @@ POST /api/location/proof
 Authorization: Bearer <LOCATION_PROOF_TOKEN>
 Content-Type: application/json
 
-{"latitude": 0, "longitude": 0, "accuracy": 10, "observed_at": "2026-08-29T20:30:00+08:00"}
+{"proof_id":"UUID-V4","latitude":0,"longitude":0,"accuracy":10,"coordinate_system":"wgs84","observed_at":"2026-08-29T20:30:00+08:00","address":"可选的系统定位地址"}
 ```
 
-服务器会检查时间新鲜度和地理围栏；失败只记录状态，不会触发提交。严禁使用固定坐标、历史坐标或定位欺骗。
+服务器会验证 Bearer Token、UUID 防重放、时间新鲜度和定位精度，不绑定具体设备。上传成功只代表“新鲜位置已接收”；真正提交前还会用当前任务返回的 `signPlaceSelected` 和 `radius` 再做一次动态范围校验。失败只记录状态，不会触发提交。
 
 ## 协议状态
 

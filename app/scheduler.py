@@ -4,7 +4,10 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from campus.client import create_client
+from campus.task import is_attendance_task
 from .db import get_setting, log_event, now_iso, set_settings
+from .db import connect
+from .location import match_task_place, normalize_for_task, verify_location
 
 _lock = threading.Lock()
 _started = False
@@ -32,9 +35,105 @@ def poll():
         client = create_client()
         tasks = client.list_today()
         log_event("POLL_OK", f"Task poll completed; {len(tasks)} task(s) returned")
+        if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
+            return
+        for task in tasks:
+            if task.completed or not is_attendance_task(task.name) or _already_attempted(task.task_id):
+                continue
+            _process_task(client, task)
     except Exception as exc:
         # Expected until the institution-specific current protocol is configured.
         log_event("POLL_SKIPPED", str(exc), "WARNING")
+
+
+def _process_task(client, task):
+    detail = client.detail(task)
+    if not _task_window_open(detail):
+        log_event("TASK_NOT_OPEN", "Attendance task is not in its active time window")
+        return
+    location = _latest_location()
+    if not location:
+        log_event("LOCATION_REQUIRED", "No fresh trusted-device location is available", "WARNING")
+        return
+    valid, reason = verify_location(location["latitude"], location["longitude"], location["observed_at"], location["accuracy"] or 0)
+    if not valid:
+        log_event("LOCATION_REJECTED", reason, "WARNING")
+        return
+    latitude, longitude = normalize_for_task(location["latitude"], location["longitude"], location["coordinate_system"])
+    place = match_task_place(latitude, longitude, detail.get("signPlaceSelected"))
+    if not place:
+        log_event("OUTSIDE_TASK_GEOFENCE", "Fresh location is outside this task's allowed places", "WARNING")
+        return
+    _save_task(task, detail)
+    result = client.submit(task, {
+        "verified": True,
+        "latitude": latitude,
+        "longitude": longitude,
+        "address": str(place.get("address") or location["address"] or ""),
+        "is_malposition": False,
+    })
+    confirmed = all(item.task_id != task.task_id for item in client.list_today() if not item.completed)
+    status = "SUCCESS" if confirmed else "SUBMITTED_UNCONFIRMED"
+    _save_checkin(task, status, "Submission confirmed" if confirmed else "Submission sent; confirmation pending")
+    log_event("CHECKIN_SUCCESS" if confirmed else "CHECKIN_UNCONFIRMED", status, "INFO" if confirmed else "WARNING")
+    if confirmed:
+        set_settings({"last_success": now_iso()})
+    return result
+
+
+def _parse_time(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo(os.getenv("TZ", "Asia/Shanghai")))
+        return parsed
+    except ValueError:
+        return None
+
+
+def _task_window_open(detail):
+    current = _parse_time(detail.get("currentTime")) or datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Shanghai")))
+    start = _parse_time(detail.get("singleTaskBeginTime"))
+    end = _parse_time(detail.get("singleTaskEndTime"))
+    return bool(start and end and start <= current <= end)
+
+
+def _latest_location():
+    with connect() as db:
+        return db.execute(
+            "SELECT latitude,longitude,accuracy,observed_at,address,coordinate_system FROM locations WHERE verified=1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+
+def _already_attempted(task_id):
+    with connect() as db:
+        row = db.execute(
+            "SELECT 1 FROM checkins WHERE task_id=? AND status IN ('SUCCESS','SUBMITTED_UNCONFIRMED') LIMIT 1", (task_id,)
+        ).fetchone()
+    return bool(row)
+
+
+def _save_task(task, detail):
+    import json
+    at = now_iso()
+    safe_detail = {key: detail.get(key) for key in ("signMode", "signCondition", "singleTaskBeginTime", "singleTaskEndTime", "isPhoto")}
+    with connect() as db:
+        db.execute(
+            "INSERT INTO tasks(task_id,task_name,start_time,end_time,status,detail_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(task_id) DO UPDATE SET task_name=excluded.task_name,start_time=excluded.start_time,end_time=excluded.end_time,status=excluded.status,detail_json=excluded.detail_json,updated_at=excluded.updated_at",
+            (task.task_id, task.name, task.start_time, task.end_time, "PENDING", json.dumps(safe_detail), at, at),
+        )
+
+
+def _save_checkin(task, status, message):
+    at = now_iso()
+    with connect() as db:
+        db.execute(
+            "INSERT INTO checkins(date,task_id,task_name,start_time,end_time,submit_time,status,response_message,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (at[:10], task.task_id, task.name, task.start_time, task.end_time, at, status, message, at, at),
+        )
 
 
 def start_scheduler():

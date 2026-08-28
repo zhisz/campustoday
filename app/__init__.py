@@ -1,7 +1,10 @@
 import hmac
+import math
 import os
 import secrets
-from datetime import datetime, timezone
+import sqlite3
+import uuid
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template_string, request, session, url_for
@@ -131,18 +134,37 @@ def create_app():
             abort(401)
         data = request.get_json(silent=True) or {}
         try:
+            parsed_proof_id = uuid.UUID(str(data["proof_id"]))
+            if parsed_proof_id.version != 4:
+                raise ValueError
+            proof_id = str(parsed_proof_id)
             lat, lon = float(data["latitude"]), float(data["longitude"])
             accuracy = float(data.get("accuracy", 0))
             observed_at = str(data["observed_at"])
-            if not (-90 <= lat <= 90 and -180 <= lon <= 180) or accuracy < 0:
+            address = str(data.get("address") or "")[:500]
+            coordinate_system = str(data["coordinate_system"]).lower()
+            if coordinate_system not in {"wgs84", "gcj02"}:
                 raise ValueError
-        except (KeyError, TypeError, ValueError):
+            if not all(math.isfinite(value) for value in (lat, lon, accuracy)) or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, AttributeError):
             abort(400)
-        verified, reason = verify_location(lat, lon, observed_at)
-        with connect() as db:
-            db.execute("INSERT INTO locations(latitude,longitude,accuracy,observed_at,received_at,verified,reason,source) VALUES(?,?,?,?,?,?,?,?)", (lat, lon, accuracy, observed_at, now_iso(), int(verified), reason, "trusted_device"))
+        verified, reason = verify_location(lat, lon, observed_at, accuracy)
+        try:
+            with connect() as db:
+                db.execute(
+                    "INSERT INTO locations(latitude,longitude,accuracy,observed_at,received_at,verified,reason,source,proof_id,device_id,address,coordinate_system) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (lat, lon, accuracy, observed_at, now_iso(), int(verified), reason, "trusted_device", proof_id, None, address, coordinate_system),
+                )
+        except sqlite3.IntegrityError:
+            return jsonify(accepted=False, reason="DUPLICATE_PROOF"), 409
         log_event("LOCATION_PROOF", reason, "INFO" if verified else "WARNING")
-        return jsonify(verified=verified, reason=reason), 200 if verified else 422
+        try:
+            observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+            expires = observed + timedelta(seconds=int(os.getenv("LOCATION_MAX_AGE_SECONDS", "300")))
+        except ValueError:
+            expires = None
+        return jsonify(accepted=verified, reason=reason, expires_at=expires.isoformat() if expires else None), 200 if verified else 422
 
     return app
 

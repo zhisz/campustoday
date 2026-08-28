@@ -1,12 +1,14 @@
 import os
 import tempfile
 import unittest
+import uuid
+from datetime import datetime, timezone
 
 
 class AppTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", CPDAILY_MODE="disabled", AUTO_ENABLED="false")
+        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", CPDAILY_MODE="disabled", AUTO_ENABLED="false", LOCATION_MODE="trusted_device", LOCATION_PROOF_TOKEN="proof-secret", LOCATION_MAX_AGE_SECONDS="300", LOCATION_MAX_ACCURACY_METERS="100")
         from app import create_app
         self.app = create_app(); self.app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
         self.client = self.app.test_client()
@@ -28,6 +30,35 @@ class AppTest(unittest.TestCase):
         response = self.client.post("/login", data={"csrf": self.csrf(), "username": "admin", "password": "wrong"})
         self.assertEqual(response.status_code, 200)
 
+    def test_location_proof_accepts_fresh_position_and_rejects_replay(self):
+        payload = {
+            "proof_id": str(uuid.uuid4()),
+            "latitude": 28.1,
+            "longitude": 115.8,
+            "accuracy": 20,
+            "coordinate_system": "wgs84",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        headers = {"Authorization": "Bearer proof-secret"}
+        response = self.client.post("/api/location/proof", json=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json["accepted"])
+        replay = self.client.post("/api/location/proof", json=payload, headers=headers)
+        self.assertEqual(replay.status_code, 409)
+
+    def test_location_proof_rejects_bad_token_and_low_accuracy(self):
+        payload = {
+            "proof_id": str(uuid.uuid4()),
+            "latitude": 28.1,
+            "longitude": 115.8,
+            "accuracy": 150,
+            "coordinate_system": "wgs84",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.assertEqual(self.client.post("/api/location/proof", json=payload).status_code, 401)
+        response = self.client.post("/api/location/proof", json=payload, headers={"Authorization": "Bearer proof-secret"})
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json["reason"], "LOCATION_ACCURACY_TOO_LOW")
+
 
 if __name__ == "__main__": unittest.main()
-
