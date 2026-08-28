@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.12.14-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -13,4 +13,3 @@ RUN chown -R campustoday:campustoday /srv/campustoday
 USER campustoday
 EXPOSE 8000
 CMD ["gunicorn", "--bind=0.0.0.0:8000", "--workers=1", "--threads=4", "--timeout=60", "--access-logfile=-", "--error-logfile=-", "app:create_app()"]
-
