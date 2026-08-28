@@ -10,6 +10,7 @@ from functools import wraps
 from flask import Flask, abort, flash, jsonify, redirect, render_template_string, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from .dashboard import build_dashboard
 from .db import connect, get_setting, log_event, migrate, now_iso, set_settings
 from .location import verify_location
 from .scheduler import start_scheduler, status as scheduler_status
@@ -84,9 +85,7 @@ def create_app():
     @app.get("/dashboard")
     @protected
     def dashboard():
-        with connect() as db:
-            location = db.execute("SELECT reason,observed_at FROM locations ORDER BY id DESC LIMIT 1").fetchone()
-        return page("状态", DASHBOARD, status=scheduler_status(), location=location)
+        return page("状态", DASHBOARD, status=scheduler_status(), dashboard=build_dashboard())
 
     @app.route("/settings", methods=["GET", "POST"])
     @protected

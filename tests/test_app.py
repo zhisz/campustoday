@@ -26,6 +26,13 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.login().status_code, 302)
         response = self.client.get("/api/status")
         self.assertEqual(response.status_code, 200); self.assertEqual(response.json["database"], "ok")
+    def test_dashboard_contains_operational_sections_when_school_api_is_offline(self):
+        self.login()
+        response = self.client.get("/dashboard")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        for label in ("今日及即将开始", "最近设备位置", "学校签到记录", "当前签到账号", "自动签到成功"):
+            self.assertIn(label, page)
     def test_bad_login(self):
         response = self.client.post("/login", data={"csrf": self.csrf(), "username": "admin", "password": "wrong"})
         self.assertEqual(response.status_code, 200)

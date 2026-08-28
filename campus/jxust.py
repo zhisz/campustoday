@@ -4,6 +4,8 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
+from typing import Optional
 
 from .attendance import AttendanceClient, AttendanceTask
 from .device import configured_device
@@ -22,6 +24,7 @@ class JxustAttendanceClient(AttendanceClient):
 
     LIST_PATH = "/wec-counselor-attendance-apps/student/attendance/getStuAttendacesInOneDay"
     DETAIL_PATH = "/wec-counselor-attendance-apps/student/attendance/detailSignInstance"
+    HISTORY_PATH = "/wec-counselor-attendance-apps/student/attendance/getStuSignInfosByWeekMonth"
     SUBMIT_PATH = "/wec-counselor-attendance-apps/student/attendance/submitSign"
 
     def __init__(self):
@@ -81,6 +84,17 @@ class JxustAttendanceClient(AttendanceClient):
         )
         if not isinstance(result, dict):
             raise ProtocolError("Task detail response has an unexpected shape")
+        return result
+
+    def month_history(self, year_month: Optional[str] = None) -> dict:
+        year_month = year_month or datetime.now().strftime("%Y-%m")
+        try:
+            datetime.strptime(year_month, "%Y-%m")
+        except ValueError:
+            raise ValueError("year_month must use YYYY-MM format") from None
+        result = self._post(self.HISTORY_PATH, {"statisticYearMonth": year_month})
+        if not isinstance(result, dict) or not isinstance(result.get("rows"), list):
+            raise ProtocolError("Attendance history response has an unexpected shape")
         return result
 
     def submit(self, task: AttendanceTask, location: dict) -> dict:

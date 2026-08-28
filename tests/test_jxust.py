@@ -63,6 +63,19 @@ class JxustClientTest(unittest.TestCase):
         self.assertEqual(json.loads(request.data), {"signInstanceWid": "i1", "signWid": "s1"})
         self.assertEqual(result["signMode"], 0)
 
+    def test_month_history_uses_verified_endpoint(self):
+        envelope = {"code": "0", "message": "SUCCESS", "datas": {"rows": [], "serverDate": "2026-08-29"}}
+        with patch("urllib.request.OpenerDirector.open", return_value=FakeResponse(envelope)) as opened:
+            result = JxustAttendanceClient().month_history("2026-08")
+        request = opened.call_args.args[0]
+        self.assertTrue(request.full_url.endswith(JxustAttendanceClient.HISTORY_PATH))
+        self.assertEqual(json.loads(request.data), {"statisticYearMonth": "2026-08"})
+        self.assertEqual(result["serverDate"], "2026-08-29")
+
+    def test_month_history_rejects_invalid_month(self):
+        with self.assertRaisesRegex(ValueError, "YYYY-MM"):
+            JxustAttendanceClient().month_history("2026/08")
+
     def test_submit_is_off_by_default(self):
         task = AttendanceTask("i1", "s1", "晚查寝", "", "", False, True)
         with self.assertRaisesRegex(RuntimeError, "submission is disabled"):
