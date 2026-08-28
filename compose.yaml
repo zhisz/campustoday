@@ -7,9 +7,9 @@ services:
     container_name: campustoday-app
     restart: unless-stopped
     env_file:
-      - .env
+      - ${ENV_FILE:-.env}
     volumes:
-      - ./data:/data
+      - ${DATA_PATH:-./data}:/data
     ports:
       - "127.0.0.1:${HOST_PORT:-3600}:8000"
     healthcheck:
@@ -36,4 +36,3 @@ services:
 networks:
   app:
     name: campustoday-app
-
