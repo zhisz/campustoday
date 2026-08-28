@@ -19,6 +19,9 @@ from .templates import ACCOUNTS, BASE, DASHBOARD, LOGIN, SETTINGS, TABLE
 
 
 def create_app():
+    # The SQLite database contains attendance session cookies. Keep all files
+    # created by the web process private to its operating-system user.
+    os.umask(0o077)
     app = Flask(__name__)
     app.secret_key = os.environ["APP_SECRET"]
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=True, MAX_CONTENT_LENGTH=32 * 1024)
