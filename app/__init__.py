@@ -10,11 +10,12 @@ from functools import wraps
 from flask import Flask, abort, flash, jsonify, redirect, render_template_string, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from .campus_accounts import check_session, create_account, delete_account, get_account, list_accounts, update_account
 from .dashboard import build_dashboard
 from .db import connect, get_setting, log_event, migrate, now_iso, set_settings
 from .location import verify_location
 from .scheduler import start_scheduler, status as scheduler_status
-from .templates import BASE, DASHBOARD, LOGIN, SETTINGS, TABLE
+from .templates import ACCOUNTS, BASE, DASHBOARD, LOGIN, SETTINGS, TABLE
 
 
 def create_app():
@@ -103,13 +104,71 @@ def create_app():
         values = {"monitor_start": get_setting("monitor_start", os.getenv("MONITOR_START", "20:00")), "monitor_end": get_setting("monitor_end", os.getenv("MONITOR_END", "23:30"))}
         return page("设置", SETTINGS, values=values, status=scheduler_status())
 
+    @app.get("/accounts")
+    @protected
+    def campus_accounts():
+        return page("签到账号", ACCOUNTS, accounts=list_accounts())
+
+    @app.post("/accounts")
+    @protected
+    def campus_account_create():
+        try:
+            account_id = create_account(
+                request.form.get("name"),
+                request.form.get("session_cookie"),
+                request.form.get("auto_enabled") == "true",
+            )
+            result = check_session(account_id)
+            flash("账号已添加，会话有效" if result["valid"] else "账号已添加，但 Cookie 验证失败")
+            log_event("CAMPUS_ACCOUNT_CREATED", f"Campus account {account_id} created")
+        except ValueError as exc:
+            flash(str(exc))
+        return redirect(url_for("campus_accounts"))
+
+    @app.post("/accounts/<int:account_id>/update")
+    @protected
+    def campus_account_update(account_id):
+        try:
+            changed = update_account(
+                account_id,
+                request.form.get("name"),
+                request.form.get("session_cookie"),
+                request.form.get("auto_enabled") == "true",
+            )
+            if not changed:
+                abort(404)
+            flash("账号设置已保存；如果更换了 Cookie，请点击“检测会话”")
+            log_event("CAMPUS_ACCOUNT_UPDATED", f"Campus account {account_id} updated")
+        except ValueError as exc:
+            flash(str(exc))
+        return redirect(url_for("campus_accounts"))
+
+    @app.post("/accounts/<int:account_id>/check")
+    @protected
+    def campus_account_check(account_id):
+        if not get_account(account_id):
+            abort(404)
+        result = check_session(account_id)
+        flash(f"会话有效，当日返回 {result['task_count']} 个任务" if result["valid"] else f"会话检测失败：{result['error']}")
+        log_event("CAMPUS_SESSION_CHECKED", f"Campus account {account_id}: {'valid' if result['valid'] else 'invalid'}")
+        return redirect(url_for("campus_accounts"))
+
+    @app.post("/accounts/<int:account_id>/delete")
+    @protected
+    def campus_account_delete(account_id):
+        if not delete_account(account_id):
+            abort(404)
+        log_event("CAMPUS_ACCOUNT_DELETED", f"Campus account {account_id} deleted")
+        flash("签到账号已删除，历史执行记录仍保留")
+        return redirect(url_for("campus_accounts"))
+
     @app.get("/history")
     @protected
     def history():
         with connect() as db:
-            records = db.execute("SELECT date,task_name,status,submit_time,response_message FROM checkins ORDER BY id DESC LIMIT 30").fetchall()
-        rows = [[r[k] or "—" for k in ("date", "task_name", "status", "submit_time", "response_message")] for r in records]
-        return page("历史", TABLE, heading="最近 30 条记录", headers=["日期","任务","状态","提交时间","结果"], rows=rows)
+            records = db.execute("SELECT date,account_name,task_name,status,submit_time,response_message FROM checkins ORDER BY id DESC LIMIT 30").fetchall()
+        rows = [[r[k] or "—" for k in ("date", "account_name", "task_name", "status", "submit_time", "response_message")] for r in records]
+        return page("历史", TABLE, heading="最近 30 条记录", headers=["日期","账号","任务","状态","提交时间","结果"], rows=rows)
 
     @app.get("/logs")
     @protected

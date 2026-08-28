@@ -27,13 +27,13 @@ class JxustAttendanceClient(AttendanceClient):
     HISTORY_PATH = "/wec-counselor-attendance-apps/student/attendance/getStuSignInfosByWeekMonth"
     SUBMIT_PATH = "/wec-counselor-attendance-apps/student/attendance/submitSign"
 
-    def __init__(self):
+    def __init__(self, session_cookie: Optional[str] = None):
         self.base_url = os.getenv("CPDAILY_BASE_URL", "https://fdm.jxust.edu.cn").rstrip("/")
         parsed = urllib.parse.urlsplit(self.base_url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.path:
             raise RuntimeError("CPDAILY_BASE_URL must be an HTTPS origin")
         self.allowed_host = parsed.hostname
-        self.cookie = os.getenv("CPDAILY_SESSION_COOKIE", "").strip()
+        self.cookie = (session_cookie if session_cookie is not None else os.getenv("CPDAILY_SESSION_COOKIE", "")).strip()
         if not self.cookie:
             raise RuntimeError("CPDAILY_SESSION_COOKIE is not configured")
         if "\n" in self.cookie or "\r" in self.cookie:

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 class AppTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", CPDAILY_MODE="disabled", AUTO_ENABLED="false", LOCATION_MODE="trusted_device", LOCATION_PROOF_TOKEN="proof-secret", LOCATION_MAX_AGE_SECONDS="300", LOCATION_MAX_ACCURACY_METERS="100")
+        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", CPDAILY_MODE="disabled", CPDAILY_SESSION_COOKIE="", AUTO_ENABLED="false", LOCATION_MODE="trusted_device", LOCATION_PROOF_TOKEN="proof-secret", LOCATION_MAX_AGE_SECONDS="300", LOCATION_MAX_ACCURACY_METERS="100")
         from app import create_app
         self.app = create_app(); self.app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
         self.client = self.app.test_client()
@@ -36,6 +36,27 @@ class AppTest(unittest.TestCase):
     def test_bad_login(self):
         response = self.client.post("/login", data={"csrf": self.csrf(), "username": "admin", "password": "wrong"})
         self.assertEqual(response.status_code, 200)
+
+    def test_campus_account_can_be_added_updated_and_deleted_without_echoing_cookie(self):
+        self.login()
+        with self.client.session_transaction() as current_session:
+            token = current_session["csrf"]
+        cookie = "MOD_AUTH_CAS=private-test-cookie"
+        response = self.client.post("/accounts", data={"csrf": token, "name": "测试账号", "session_cookie": cookie, "auto_enabled": "true"})
+        self.assertEqual(response.status_code, 302)
+        page = self.client.get("/accounts").get_data(as_text=True)
+        self.assertIn("测试账号", page)
+        self.assertNotIn(cookie, page)
+        from app.db import connect
+        with connect() as db:
+            account = db.execute("SELECT id,auto_enabled FROM campus_accounts").fetchone()
+        self.client.post(f"/accounts/{account['id']}/update", data={"csrf": token, "name": "新名称", "session_cookie": "", "auto_enabled": "false"})
+        with connect() as db:
+            updated = db.execute("SELECT name,auto_enabled,session_cookie FROM campus_accounts WHERE id=?", (account["id"],)).fetchone()
+        self.assertEqual((updated["name"], updated["auto_enabled"], updated["session_cookie"]), ("新名称", 0, cookie))
+        self.client.post(f"/accounts/{account['id']}/delete", data={"csrf": token})
+        with connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM campus_accounts").fetchone()[0], 0)
 
     def test_location_proof_accepts_fresh_position_and_rejects_replay(self):
         payload = {

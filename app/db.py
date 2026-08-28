@@ -77,6 +77,37 @@ def migrate():
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_proof_id ON locations(proof_id) WHERE proof_id IS NOT NULL")
         db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, CURRENT_TIMESTAMP)")
         db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, CURRENT_TIMESTAMP)")
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS campus_accounts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          session_cookie TEXT NOT NULL,
+          auto_enabled INTEGER NOT NULL DEFAULT 1,
+          session_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+          last_checked_at TEXT,
+          last_error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        """)
+        checkin_columns = {row["name"] for row in db.execute("PRAGMA table_info(checkins)")}
+        for name, definition in (("account_id", "INTEGER"), ("account_name", "TEXT")):
+            if name not in checkin_columns:
+                db.execute(f"ALTER TABLE checkins ADD COLUMN {name} {definition}")
+        migrated = db.execute("SELECT value FROM settings WHERE key='legacy_cookie_migrated'").fetchone()
+        if not migrated:
+            legacy_cookie = os.getenv("CPDAILY_SESSION_COOKIE", "").strip()
+            if legacy_cookie:
+                at = now_iso()
+                db.execute(
+                    "INSERT INTO campus_accounts(name,session_cookie,auto_enabled,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    ("默认账号", legacy_cookie, 1, at, at),
+                )
+            db.execute(
+                "INSERT INTO settings(key,value,updated_at) VALUES('legacy_cookie_migrated','true',?)",
+                (now_iso(),),
+            )
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, CURRENT_TIMESTAMP)")
 
 
 def log_event(event: str, message: str, level: str = "INFO", metadata=None):

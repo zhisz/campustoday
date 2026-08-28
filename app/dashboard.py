@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from campus.client import create_client
 from campus.device import configured_device
 
+from .campus_accounts import list_accounts
 from .db import connect
 
 
@@ -28,7 +29,7 @@ def build_dashboard():
         automatic_successes = db.execute("SELECT COUNT(*) AS count FROM checkins WHERE status='SUCCESS'").fetchone()["count"]
         automatic_records = [
             dict(row) for row in db.execute(
-                "SELECT date,task_name,status,submit_time,response_message FROM checkins ORDER BY id DESC LIMIT 8"
+                "SELECT date,task_name,status,submit_time,response_message,account_name FROM checkins ORDER BY id DESC LIMIT 8"
             ).fetchall()
         ]
 
@@ -41,19 +42,28 @@ def build_dashboard():
         "school_history": [],
         "school_signed_count": 0,
         "school_error": None,
-        "account": _account_view(False),
+        "accounts": [],
         "history_month": datetime.now(LOCAL_TZ).strftime("%Y-%m"),
     }
 
-    try:
-        client = create_client()
-        tasks = client.list_today()
-        result["upcoming"] = [_task_view(task) for task in tasks if not task.completed]
-        history = client.month_history(result["history_month"])
-        result["school_history"], result["school_signed_count"] = _flatten_history(history.get("rows", []), result["history_month"])
-        result["account"] = _account_view(True)
-    except Exception as exc:
-        result["school_error"] = str(exc)
+    errors = []
+    for account in list_accounts(include_cookie=True):
+        session_valid = False
+        try:
+            client = create_client(account["session_cookie"])
+            tasks = client.list_today()
+            result["upcoming"].extend(_task_view(task, account["name"]) for task in tasks if not task.completed)
+            history = client.month_history(result["history_month"])
+            records, count = _flatten_history(history.get("rows", []), result["history_month"], account["name"])
+            result["school_history"].extend(records)
+            result["school_signed_count"] += count
+            session_valid = True
+        except Exception as exc:
+            errors.append(f'{account["name"]}: {exc}')
+        result["accounts"].append(_account_view(account, session_valid))
+    result["school_history"].sort(key=lambda item: (item["date"], item["time"]), reverse=True)
+    result["school_history"] = result["school_history"][:50]
+    result["school_error"] = "；".join(errors) if errors else None
     return result
 
 
@@ -98,7 +108,7 @@ def _location_view(row):
     }
 
 
-def _task_view(task):
+def _task_view(task, account_name):
     now = datetime.now(LOCAL_TZ)
     start, end = _parse_datetime(task.start_time), _parse_datetime(task.end_time)
     if start and now < start:
@@ -113,10 +123,11 @@ def _task_view(task):
         "end": _format_datetime(task.end_time),
         "state": state,
         "tone": tone,
+        "account_name": account_name,
     }
 
 
-def _flatten_history(rows, year_month):
+def _flatten_history(rows, year_month, account_name):
     records, signed_count = [], 0
     for day in rows:
         if not isinstance(day, dict):
@@ -139,6 +150,7 @@ def _flatten_history(rows, year_month):
                     "tone": tone,
                     "time": _history_time(item),
                     "publisher": str(item.get("senderUserName") or "—"),
+                    "account_name": account_name,
                 })
     records.sort(key=lambda item: (item["date"], item["time"]), reverse=True)
     return records[:30], signed_count
@@ -157,11 +169,14 @@ def _history_time(item):
     return "—"
 
 
-def _account_view(session_valid):
+def _account_view(account_row, session_valid):
     base_url = os.getenv("CPDAILY_BASE_URL", "https://fdm.jxust.edu.cn")
-    cookie = os.getenv("CPDAILY_SESSION_COOKIE", "")
+    cookie = account_row.get("session_cookie", "")
     auth_type = cookie.split("=", 1)[0].strip() if "=" in cookie else "未配置"
     account = {
+        "id": account_row["id"],
+        "label": account_row["name"],
+        "auto_enabled": bool(account_row["auto_enabled"]),
         "school": "江西理工大学",
         "session_valid": session_valid,
         "host": urlsplit(base_url).hostname or base_url,

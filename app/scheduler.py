@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from campus.client import create_client
 from campus.task import is_attendance_task
+from .campus_accounts import list_accounts
 from .db import get_setting, log_event, now_iso, set_settings
 from .db import connect
 from .location import match_task_place, normalize_for_task, verify_location
@@ -31,22 +32,23 @@ def poll():
         return
     if not monitoring_window():
         return
-    try:
-        client = create_client()
-        tasks = client.list_today()
-        log_event("POLL_OK", f"Task poll completed; {len(tasks)} task(s) returned")
-        if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
-            return
-        for task in tasks:
-            if task.completed or not is_attendance_task(task.name) or _already_attempted(task.task_id):
+    accounts = [account for account in list_accounts(include_cookie=True) if account["auto_enabled"]]
+    for account in accounts:
+        try:
+            client = create_client(account["session_cookie"])
+            tasks = client.list_today()
+            log_event("POLL_OK", f"Account {account['name']}: {len(tasks)} task(s) returned")
+            if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
                 continue
-            _process_task(client, task)
-    except Exception as exc:
-        # Expected until the institution-specific current protocol is configured.
-        log_event("POLL_SKIPPED", str(exc), "WARNING")
+            for task in tasks:
+                if task.completed or not is_attendance_task(task.name) or _already_attempted(account["id"], task.task_id):
+                    continue
+                _process_task(client, account, task)
+        except Exception as exc:
+            log_event("POLL_SKIPPED", f"Account {account['name']}: {exc}", "WARNING")
 
 
-def _process_task(client, task):
+def _process_task(client, account, task):
     detail = client.detail(task)
     if not _task_window_open(detail):
         log_event("TASK_NOT_OPEN", "Attendance task is not in its active time window")
@@ -74,7 +76,7 @@ def _process_task(client, task):
     })
     confirmed = all(item.task_id != task.task_id for item in client.list_today() if not item.completed)
     status = "SUCCESS" if confirmed else "SUBMITTED_UNCONFIRMED"
-    _save_checkin(task, status, "Submission confirmed" if confirmed else "Submission sent; confirmation pending")
+    _save_checkin(account, task, status, "Submission confirmed" if confirmed else "Submission sent; confirmation pending")
     log_event("CHECKIN_SUCCESS" if confirmed else "CHECKIN_UNCONFIRMED", status, "INFO" if confirmed else "WARNING")
     if confirmed:
         set_settings({"last_success": now_iso()})
@@ -107,10 +109,11 @@ def _latest_location():
         ).fetchone()
 
 
-def _already_attempted(task_id):
+def _already_attempted(account_id, task_id):
     with connect() as db:
         row = db.execute(
-            "SELECT 1 FROM checkins WHERE task_id=? AND status IN ('SUCCESS','SUBMITTED_UNCONFIRMED') LIMIT 1", (task_id,)
+            "SELECT 1 FROM checkins WHERE account_id=? AND task_id=? AND status IN ('SUCCESS','SUBMITTED_UNCONFIRMED') LIMIT 1",
+            (account_id, task_id),
         ).fetchone()
     return bool(row)
 
@@ -127,12 +130,12 @@ def _save_task(task, detail):
         )
 
 
-def _save_checkin(task, status, message):
+def _save_checkin(account, task, status, message):
     at = now_iso()
     with connect() as db:
         db.execute(
-            "INSERT INTO checkins(date,task_id,task_name,start_time,end_time,submit_time,status,response_message,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (at[:10], task.task_id, task.name, task.start_time, task.end_time, at, status, message, at, at),
+            "INSERT INTO checkins(date,task_id,task_name,start_time,end_time,submit_time,status,response_message,created_at,updated_at,account_id,account_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (at[:10], task.task_id, task.name, task.start_time, task.end_time, at, status, message, at, at, account["id"], account["name"]),
         )
 
 
