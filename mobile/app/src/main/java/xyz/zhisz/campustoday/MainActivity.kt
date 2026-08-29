@@ -196,6 +196,7 @@ fun AuthScreen(controller: AppController) {
         Spacer(Modifier.height(12.dp)); OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("密码（至少 8 位）") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
         Button(onClick = { controller.auth(username, password, register) }, enabled = username.isNotBlank() && password.length >= 8, modifier = Modifier.fillMaxWidth().padding(top = 22.dp).height(52.dp)) { Text(if (register) "注册并登录" else "登录") }
         TextButton(onClick = { register = !register }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text(if (register) "已有账号？直接登录" else "没有账号？立即注册") }
+        DeveloperSignature()
     }
 }
 
@@ -219,6 +220,7 @@ fun HomeScreen(controller: AppController, onAdd: () -> Unit, onAccount: (CampusA
         controller.accounts.forEach { account -> AccountCard(account, onClick = { onAccount(account) }, onToggle = { controller.toggle(account) }) }
         OutlinedButton(onClick = { controller.checkUpdate() }, Modifier.fillMaxWidth().padding(top = 12.dp)) { Text("检查 App 更新") }
         Text("位置由服务器统一管理，本 App 不会读取或上传位置。", color = Color(0xFF7B8798), fontSize = 12.sp, modifier = Modifier.padding(vertical = 20.dp))
+        DeveloperSignature()
     }
 }
 
@@ -299,3 +301,5 @@ fun JsonItems(items: JSONArray?, emptyText: String, titleKey: String, detail: (J
 }
 
 @Composable fun EmptyCard(title: String, detail: String) { Surface(Modifier.fillMaxWidth(), color = Color(0xFFEFF3F8), shape = RoundedCornerShape(16.dp)) { Column(Modifier.padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(title, fontWeight = FontWeight.Bold); if (detail.isNotBlank()) Text(detail, color = Color(0xFF758197), fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp)) } } }
+
+@Composable fun DeveloperSignature() { Text("由 zhiSZ 开发", color = Color(0xFF98A2B3), fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
