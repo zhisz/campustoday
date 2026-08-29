@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from campus.client import create_client
 from campus.task import is_attendance_task
-from .campus_accounts import list_accounts
+from .campus_accounts import get_account, list_accounts
 from .db import get_setting, log_event, now_iso, set_settings
 from .db import connect
 from .location import match_task_place, normalize_for_task, verify_location
@@ -13,6 +13,8 @@ from .location import match_task_place, normalize_for_task, verify_location
 _lock = threading.Lock()
 _started = False
 _next_run = None
+_scheduled_tasks = {}
+_scheduled_lock = threading.Lock()
 
 
 def enabled() -> bool:
@@ -43,9 +45,47 @@ def poll():
             for task in tasks:
                 if task.completed or not is_attendance_task(task.name) or _already_attempted(account["id"], task.task_id):
                     continue
-                _process_task(client, account, task)
+                _schedule_task(account, task)
         except Exception as exc:
             log_event("POLL_SKIPPED", f"Account {account['name']}: {exc}", "WARNING")
+
+
+def _schedule_task(account, task):
+    key = (account["id"], task.task_id)
+    now = datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Shanghai")))
+    task_start = _parse_time(task.start_time)
+    detection_base = task_start if task_start and task_start > now else now
+    run_at = detection_base + timedelta(seconds=60)
+    delay = max(1, (run_at - now).total_seconds())
+    with _scheduled_lock:
+        if key in _scheduled_tasks:
+            return
+        timer = threading.Timer(delay, _run_scheduled_task, args=(account["id"], task.task_id))
+        timer.daemon = True
+        _scheduled_tasks[key] = {"timer": timer, "run_at": run_at}
+        timer.start()
+    log_event("TASK_SCHEDULED", f"Account {account['name']}: attendance scheduled for {run_at.isoformat()}")
+
+
+def _run_scheduled_task(account_id, task_id):
+    key = (account_id, task_id)
+    try:
+        account = get_account(account_id, include_cookie=True)
+        if not account or not account["auto_enabled"] or not enabled():
+            return
+        if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true" or _already_attempted(account_id, task_id):
+            return
+        client = create_client(account["session_cookie"])
+        task = next((item for item in client.list_today() if item.task_id == task_id and not item.completed), None)
+        if not task:
+            log_event("SCHEDULED_TASK_GONE", f"Account {account['name']}: task is no longer pending")
+            return
+        _process_task(client, account, task)
+    except Exception as exc:
+        log_event("SCHEDULED_TASK_FAILED", f"Account {account_id}: {exc}", "WARNING")
+    finally:
+        with _scheduled_lock:
+            _scheduled_tasks.pop(key, None)
 
 
 def _process_task(client, account, task):
