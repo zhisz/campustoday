@@ -163,7 +163,40 @@ def accounts_create():
     except ValueError as exc:
         return _json_error(str(exc))
     result = check_session(account_id)
+    if result.get("valid"):
+        account_id, conflict = _merge_duplicate_identity(account_id, g.app_user["id"])
+        if conflict:
+            return _json_error("该学校账号已被其他 App 用户添加", 409)
     return jsonify(account=_account_summary(get_account(account_id)), check=result), 201
+
+
+def _merge_duplicate_identity(new_account_id, owner_user_id):
+    """Claim a legacy admin account or refresh an account already owned by this user."""
+    new_account = get_account(new_account_id, include_cookie=True)
+    if not new_account or not new_account.get("campus_user_id"):
+        return new_account_id, False
+    with connect() as db:
+        existing = db.execute(
+            "SELECT id,owner_user_id,auto_enabled FROM campus_accounts WHERE campus_user_id=? AND id<>? ORDER BY id LIMIT 1",
+            (new_account["campus_user_id"], new_account_id),
+        ).fetchone()
+        if not existing:
+            return new_account_id, False
+        if existing["owner_user_id"] not in (None, owner_user_id):
+            db.execute("DELETE FROM campus_accounts WHERE id=?", (new_account_id,))
+            return new_account_id, True
+        auto_enabled = existing["auto_enabled"] if existing["owner_user_id"] == owner_user_id else 0
+        db.execute(
+            "UPDATE campus_accounts SET name=?,real_name=?,campus_user_id=?,identity_verified_at=?,session_cookie=?,"
+            "session_status=?,last_checked_at=?,last_error=?,device_id=?,app_version=?,device_model=?,system_name=?,"
+            "system_version=?,owner_user_id=?,auto_enabled=?,updated_at=? WHERE id=?",
+            (new_account["name"], new_account["real_name"], new_account["campus_user_id"], new_account["identity_verified_at"],
+             new_account["session_cookie"], new_account["session_status"], new_account["last_checked_at"], new_account["last_error"],
+             new_account["device_id"], new_account["app_version"], new_account["device_model"], new_account["system_name"],
+             new_account["system_version"], owner_user_id, auto_enabled, now_iso(), existing["id"]),
+        )
+        db.execute("DELETE FROM campus_accounts WHERE id=?", (new_account_id,))
+        return existing["id"], False
 
 
 @mobile_api.get("/accounts/<int:account_id>")

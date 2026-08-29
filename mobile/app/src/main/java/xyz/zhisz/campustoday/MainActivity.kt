@@ -242,13 +242,23 @@ fun StatusBadge(status: String) {
 
 @Composable
 fun SchoolLoginScreen(controller: AppController, onBack: () -> Unit) {
-    val context = LocalContext.current; var webView by remember { mutableStateOf<WebView?>(null) }; var hint by remember { mutableStateOf("请在下方学校页面完成登录") }
+    val context = LocalContext.current; var hint by remember { mutableStateOf("正在为你打开学校统一身份认证…") }
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(18.dp)) { Header("登录学校门户", hint) { TextButton(onClick = onBack) { Text("取消") } } }
         AndroidView(factory = { WebView(context).apply {
-            webView = this; settings.javaScriptEnabled = true; settings.domStorageEnabled = true
+            settings.javaScriptEnabled = true; settings.domStorageEnabled = true
             CookieManager.getInstance().setAcceptCookie(true); CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-            webViewClient = WebViewClient(); CookieManager.getInstance().removeAllCookies { loadUrl(PORTAL_URL) }
+            webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    super.onPageFinished(view, url)
+                    val signedIn = CookieManager.getInstance().getCookie("https://fdm.jxust.edu.cn").orEmpty().contains("MOD_AUTH_CAS=")
+                    if (signedIn) hint = "已检测到学校登录，请点击底部按钮添加"
+                    else if (url.contains("/portal/index.html")) view.postDelayed({
+                        view.evaluateJavascript("(function(){var b=document.getElementById('ampLoginBtn');if(b){b.click();return 'clicked';}return 'missing';})()", null)
+                    }, 1600)
+                }
+            }
+            CookieManager.getInstance().removeAllCookies { loadUrl(PORTAL_URL) }
         } }, modifier = Modifier.weight(1f).fillMaxWidth())
         Button(onClick = {
             val cookie = CookieManager.getInstance().getCookie("https://fdm.jxust.edu.cn").orEmpty()

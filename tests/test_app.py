@@ -147,5 +147,27 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.client.get("/download/campustoday-1.0.0.apk").data, b"test-apk")
         self.assertIn("下载最新版 APK", self.client.get("/app").get_data(as_text=True))
 
+    def test_mobile_user_claims_matching_legacy_account_without_duplicate(self):
+        from app.campus_accounts import check_session, create_account
+        campus_client = MagicMock()
+        campus_client.identity.return_value = {"user_name": "李尚智", "user_id": "same-student"}
+        with patch("app.campus_accounts.create_client", return_value=campus_client):
+            legacy_id = create_account("旧账号", "legacy-cookie", True)
+            check_session(legacy_id)
+        registered = self.client.post("/api/v1/auth/register", json={"username": "claim_user", "password": "strong-pass-123"})
+        headers = {"Authorization": f"Bearer {registered.json['token']}"}
+        payload = {"session_cookie": "new-cookie", "device": {"device_id": "phone-id", "app_version": "1.0.0", "model": "V2408A", "system_name": "Android", "system_version": "15"}}
+        with patch("app.campus_accounts.create_client", return_value=campus_client):
+            created = self.client.post("/api/v1/accounts", json=payload, headers=headers)
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json["account"]["id"], legacy_id)
+        self.assertFalse(created.json["account"]["auto_enabled"])
+        from app.db import connect
+        with connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM campus_accounts WHERE campus_user_id='same-student'").fetchone()[0], 1)
+            claimed = db.execute("SELECT owner_user_id,session_cookie,device_id FROM campus_accounts WHERE id=?", (legacy_id,)).fetchone()
+        self.assertIsNotNone(claimed["owner_user_id"])
+        self.assertEqual((claimed["session_cookie"], claimed["device_id"]), ("MOD_AUTH_CAS=new-cookie", "phone-id"))
+
 
 if __name__ == "__main__": unittest.main()
