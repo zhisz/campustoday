@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from campus.client import create_client
 from campus.task import is_attendance_task
-from .campus_accounts import get_account, list_accounts
+from .campus_accounts import account_device, get_account, list_accounts
 from .db import get_setting, log_event, now_iso, set_settings
 from .db import connect
 from .location import match_task_place, normalize_for_task, verify_location
@@ -37,7 +37,7 @@ def poll():
     accounts = [account for account in list_accounts(include_cookie=True) if account["auto_enabled"]]
     for account in accounts:
         try:
-            client = create_client(account["session_cookie"])
+            client = create_client(account["session_cookie"], account_device(account))
             tasks = client.list_today()
             log_event("POLL_OK", f"Account {account['name']}: {len(tasks)} task(s) returned")
             if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
@@ -75,7 +75,7 @@ def _run_scheduled_task(account_id, task_id):
             return
         if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true" or _already_attempted(account_id, task_id):
             return
-        client = create_client(account["session_cookie"])
+        client = create_client(account["session_cookie"], account_device(account))
         task = next((item for item in client.list_today() if item.task_id == task_id and not item.completed), None)
         if not task:
             log_event("SCHEDULED_TASK_GONE", f"Account {account['name']}: task is no longer pending")

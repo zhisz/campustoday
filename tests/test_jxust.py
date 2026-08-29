@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from campus.attendance import AttendanceTask
+from campus.device import DeviceProfile
 from campus.jxust import JxustAttendanceClient
 
 
@@ -80,6 +81,22 @@ class JxustClientTest(unittest.TestCase):
         task = AttendanceTask("i1", "s1", "晚查寝", "", "", False, True)
         with self.assertRaisesRegex(RuntimeError, "submission is disabled"):
             JxustAttendanceClient().submit(task, {"verified": True})
+
+    def test_submit_uses_the_selected_accounts_device_profile(self):
+        task = AttendanceTask("i1", "s1", "晚查寝", "", "", False, True)
+        device = DeviceProfile("account-device", "9.9.6", "Account Model", "Android", "17")
+        envelope = {"code": "0", "message": "SUCCESS", "datas": {}}
+        with patch.dict(os.environ, {"CPDAILY_SUBMIT_ENABLED": "true"}), \
+             patch("urllib.request.OpenerDirector.open", return_value=FakeResponse(envelope)) as opened:
+            JxustAttendanceClient(device_profile=device).submit(
+                task,
+                {"verified": True, "latitude": 28.1, "longitude": 115.8, "address": "campus"},
+            )
+        payload = json.loads(opened.call_args.args[0].data)
+        self.assertEqual(payload["deviceId"], "account-device")
+        self.assertEqual(payload["model"], "Account Model")
+        self.assertEqual(payload["systemName"], "Android")
+        self.assertEqual(payload["systemVersion"], "17")
 
     def test_cookie_is_required(self):
         with patch.dict(os.environ, {"CPDAILY_SESSION_COOKIE": ""}):

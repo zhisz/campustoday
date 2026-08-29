@@ -10,7 +10,7 @@ from functools import wraps
 from flask import Flask, abort, flash, jsonify, redirect, render_template_string, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from .campus_accounts import check_session, create_account, delete_account, get_account, list_accounts, update_account
+from .campus_accounts import check_session, create_account, delete_account, device_defaults, get_account, list_accounts, update_account
 from .dashboard import build_dashboard, invalidate_school_cache
 from .db import connect, get_setting, log_event, migrate, now_iso, set_settings
 from .location import verify_location
@@ -110,7 +110,7 @@ def create_app():
     @app.get("/accounts")
     @protected
     def campus_accounts():
-        return page("签到账号", ACCOUNTS, accounts=list_accounts())
+        return page("签到账号", ACCOUNTS, accounts=list_accounts(), device_defaults=device_defaults())
 
     @app.post("/accounts")
     @protected
@@ -120,6 +120,7 @@ def create_app():
                 request.form.get("name"),
                 request.form.get("session_cookie"),
                 request.form.get("auto_enabled") == "true",
+                _device_form(request.form),
             )
             result = check_session(account_id)
             flash("账号已添加，会话有效" if result["valid"] else "账号已添加，但 Cookie 验证失败")
@@ -137,6 +138,7 @@ def create_app():
                 request.form.get("name"),
                 request.form.get("session_cookie"),
                 request.form.get("auto_enabled") == "true",
+                _device_form(request.form),
             )
             if not changed:
                 abort(404)
@@ -256,3 +258,7 @@ def _ensure_admin():
         if not row:
             db.execute("INSERT INTO accounts(id,username,password_hash,created_at,updated_at) VALUES(1,?,?,?,?)", (username, generate_password_hash(password, method="pbkdf2:sha256:600000"), at, at))
             db.execute("INSERT INTO logs(level,event,message,metadata_json,created_at) VALUES('INFO','DATABASE_INITIALIZED','Initial administrator created','{}',?)", (at,))
+
+
+def _device_form(form):
+    return {key: form.get(key) for key in ("device_id", "device_model", "system_name", "system_version")}

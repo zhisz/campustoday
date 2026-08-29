@@ -21,10 +21,12 @@ class MultiAccountSchedulerTest(unittest.TestCase):
              patch("app.scheduler.enabled", return_value=True), \
              patch("app.scheduler.monitoring_window", return_value=True), \
              patch("app.scheduler.list_accounts", return_value=accounts), \
+             patch("app.scheduler.account_device", return_value="device-profile") as device, \
              patch("app.scheduler.create_client", return_value=client) as create, \
              patch("app.scheduler.log_event"):
             poll()
-        create.assert_called_once_with("a=1")
+        create.assert_called_once_with("a=1", "device-profile")
+        device.assert_called_once_with(accounts[0])
         client.list_today.assert_called_once_with()
 
     def test_task_is_scheduled_one_minute_after_its_opening_time(self):

@@ -27,7 +27,7 @@ class JxustAttendanceClient(AttendanceClient):
     HISTORY_PATH = "/wec-counselor-attendance-apps/student/attendance/getStuSignInfosByWeekMonth"
     SUBMIT_PATH = "/wec-counselor-attendance-apps/student/attendance/submitSign"
 
-    def __init__(self, session_cookie: Optional[str] = None):
+    def __init__(self, session_cookie: Optional[str] = None, device_profile=None):
         self.base_url = os.getenv("CPDAILY_BASE_URL", "https://fdm.jxust.edu.cn").rstrip("/")
         parsed = urllib.parse.urlsplit(self.base_url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.path:
@@ -39,6 +39,7 @@ class JxustAttendanceClient(AttendanceClient):
         if "\n" in self.cookie or "\r" in self.cookie:
             raise RuntimeError("CPDAILY_SESSION_COOKIE contains invalid characters")
         self.timeout = max(3, min(int(os.getenv("CPDAILY_TIMEOUT_SECONDS", "15")), 60))
+        self.device_profile = device_profile
 
     def list_today(self) -> list[AttendanceTask]:
         datas = self._post(self.LIST_PATH)
@@ -102,7 +103,7 @@ class JxustAttendanceClient(AttendanceClient):
             raise RuntimeError("CPDAILY submission is disabled")
         if location.get("verified") is not True:
             raise RuntimeError("A verified fresh device location is required")
-        device = configured_device()
+        device = self.device_profile or configured_device()
         required = ("latitude", "longitude", "address")
         if any(location.get(key) in (None, "") for key in required):
             raise RuntimeError("Verified location is incomplete")

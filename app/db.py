@@ -108,6 +108,21 @@ def migrate():
                 (now_iso(),),
             )
         db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, CURRENT_TIMESTAMP)")
+        account_columns = {row["name"] for row in db.execute("PRAGMA table_info(campus_accounts)")}
+        for name in ("device_id", "app_version", "device_model", "system_name", "system_version"):
+            if name not in account_columns:
+                db.execute(f"ALTER TABLE campus_accounts ADD COLUMN {name} TEXT")
+        device_defaults = {
+            "device_id": os.getenv("CPDAILY_DEVICE_ID", "").strip(),
+            "app_version": os.getenv("CPDAILY_APP_VERSION", "").strip(),
+            "device_model": os.getenv("CPDAILY_DEVICE_MODEL", "").strip(),
+            "system_name": os.getenv("CPDAILY_SYSTEM_NAME", "").strip(),
+            "system_version": os.getenv("CPDAILY_SYSTEM_VERSION", "").strip(),
+        }
+        for column, value in device_defaults.items():
+            if value:
+                db.execute(f"UPDATE campus_accounts SET {column}=? WHERE {column} IS NULL OR {column}=''", (value,))
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (5, CURRENT_TIMESTAMP)")
 
 
 def log_event(event: str, message: str, level: str = "INFO", metadata=None):

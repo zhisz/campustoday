@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 class AppTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", CPDAILY_MODE="disabled", CPDAILY_SESSION_COOKIE="", AUTO_ENABLED="false", LOCATION_MODE="trusted_device", LOCATION_PROOF_TOKEN="proof-secret", LOCATION_MAX_AGE_SECONDS="300", LOCATION_MAX_ACCURACY_METERS="100")
+        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", CPDAILY_MODE="disabled", CPDAILY_SESSION_COOKIE="", AUTO_ENABLED="false", LOCATION_MODE="trusted_device", LOCATION_PROOF_TOKEN="proof-secret", LOCATION_MAX_AGE_SECONDS="300", LOCATION_MAX_ACCURACY_METERS="100", CPDAILY_DEVICE_ID="device-default", CPDAILY_APP_VERSION="9.9.6", CPDAILY_DEVICE_MODEL="Default Model", CPDAILY_SYSTEM_NAME="Android", CPDAILY_SYSTEM_VERSION="16")
         from app import create_app
         self.app = create_app(); self.app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
         self.client = self.app.test_client()
@@ -53,10 +53,11 @@ class AppTest(unittest.TestCase):
             account = db.execute("SELECT id,auto_enabled FROM campus_accounts").fetchone()
         cooldown = self.client.post(f"/accounts/{account['id']}/check", data={"csrf": token}, follow_redirects=True)
         self.assertIn("60 秒内的最近结果", cooldown.get_data(as_text=True))
-        self.client.post(f"/accounts/{account['id']}/update", data={"csrf": token, "name": "新名称", "session_cookie": "", "auto_enabled": "false"})
+        self.client.post(f"/accounts/{account['id']}/update", data={"csrf": token, "name": "新名称", "session_cookie": "", "auto_enabled": "false", "device_id": "device-new", "device_model": "New Model", "system_name": "Android", "system_version": "17"})
         with connect() as db:
-            updated = db.execute("SELECT name,auto_enabled,session_cookie FROM campus_accounts WHERE id=?", (account["id"],)).fetchone()
+            updated = db.execute("SELECT name,auto_enabled,session_cookie,device_id,device_model,system_version FROM campus_accounts WHERE id=?", (account["id"],)).fetchone()
         self.assertEqual((updated["name"], updated["auto_enabled"], updated["session_cookie"]), ("新名称", 0, cookie))
+        self.assertEqual((updated["device_id"], updated["device_model"], updated["system_version"]), ("device-new", "New Model", "17"))
         toggle = self.client.post(f"/accounts/{account['id']}/toggle", data={"csrf": token, "enabled": "true"})
         self.assertEqual(toggle.status_code, 302)
         with connect() as db:

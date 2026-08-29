@@ -6,8 +6,6 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from campus.client import create_client
-from campus.device import configured_device
-
 from .campus_accounts import list_accounts
 from .db import connect
 
@@ -226,13 +224,7 @@ def _account_view(account_row, session_valid):
         "auth_type": auth_type,
         "name": "学生端签到接口未提供",
         "student_id": "学生端签到接口未提供",
-        "device": "未配置",
-        "app_version": "未配置",
+        "device": f'{account_row.get("device_model") or "未配置"} / {account_row.get("system_name") or "—"} {account_row.get("system_version") or ""}'.strip(),
+        "app_version": account_row.get("app_version") or "未配置",
     }
-    try:
-        device = configured_device()
-        account["device"] = f"{device.model} / {device.system_name} {device.system_version}"
-        account["app_version"] = device.app_version
-    except RuntimeError:
-        pass
     return account
