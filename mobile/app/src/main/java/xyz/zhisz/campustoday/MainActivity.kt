@@ -53,10 +53,15 @@ class AppController(private val activity: ComponentActivity) {
     var busy by mutableStateOf(false)
     var message by mutableStateOf<String?>(null)
     var update by mutableStateOf<JSONObject?>(null)
+    var versionReady by mutableStateOf(false)
+    var versionCheckFailed by mutableStateOf(false)
     var announcements by mutableStateOf<List<JSONObject>>(emptyList())
     var activeAnnouncement by mutableStateOf<JSONObject?>(null)
 
-    init { if (authenticated) loadAccounts() }
+    init {
+        checkUpdate(false)
+        if (authenticated) loadAccounts()
+    }
 
     fun auth(username: String, password: String, register: Boolean) = run {
         val body = JSONObject().put("username", username.trim()).put("password", password)
@@ -122,9 +127,20 @@ class AppController(private val activity: ComponentActivity) {
     }
 
     fun checkUpdate(showLatest: Boolean = true) = run {
-        val latest = ApiClient { null }.get("/api/v1/app/version")
-        if (latest.optInt("version_code") > BuildConfig.VERSION_CODE) update = latest
-        else if (showLatest) message = "当前已是最新版本"
+        versionCheckFailed = false
+        try {
+            val latest = ApiClient { null }.get("/api/v1/app/version")
+            if (latest.optInt("version_code") > BuildConfig.VERSION_CODE) {
+                update = latest
+                versionReady = !latest.optBoolean("mandatory")
+            } else {
+                versionReady = true
+                if (showLatest) message = "当前已是最新版本"
+            }
+        } catch (exc: Exception) {
+            versionCheckFailed = true
+            throw exc
+        }
     }
 
     fun markAnnouncementRead() {
@@ -208,6 +224,10 @@ fun CampusApp(controller: AppController) {
     var screen by remember { mutableStateOf(if (controller.authenticated) "home" else "auth") }
     var showFeedback by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
+    if (!controller.versionReady) {
+        VersionGate(controller)
+        return
+    }
     LaunchedEffect(controller.authenticated) { screen = if (controller.authenticated) "home" else "auth" }
     DisposableEffect(lifecycleOwner, controller.authenticated) {
         val observer = LifecycleEventObserver { _, event ->
@@ -246,6 +266,31 @@ fun CampusApp(controller: AppController) {
             text = { Column { Text(item.optString("content")); Spacer(Modifier.height(12.dp)); Text("发布于 ${item.optString("created_at")}", color = Color(0xFF7B8798), fontSize = 12.sp) } },
             confirmButton = { Button(onClick = { controller.markAnnouncementRead() }) { Text("我知道了") } }) }
         if (showFeedback) FeedbackDialog(controller) { showFeedback = false }
+    }
+}
+
+@Composable
+fun VersionGate(controller: AppController) {
+    val latest = controller.update
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding().padding(28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        when {
+            latest?.optBoolean("mandatory") == true -> {
+                Text("必须更新后才能继续", fontSize = 29.sp, fontWeight = FontWeight.ExtraBold)
+                Text("当前版本已停止服务，请更新到 v${latest.optString("version_name")}。", color = Color(0xFF6B778C), modifier = Modifier.padding(top = 12.dp, bottom = 24.dp))
+                Button(onClick = { controller.openUpdate() }, Modifier.fillMaxWidth().height(52.dp)) { Text("立即更新") }
+            }
+            controller.versionCheckFailed -> {
+                Text("无法检查最新版本", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text("为确保使用的是安全版本，请联网后重试。", color = Color(0xFF6B778C), modifier = Modifier.padding(top = 10.dp, bottom = 20.dp))
+                Button(onClick = { controller.checkUpdate(false) }) { Text("重新检查") }
+            }
+            else -> {
+                CircularProgressIndicator()
+                Text("正在检查最新版本…", color = Color(0xFF6B778C), modifier = Modifier.padding(top = 16.dp))
+            }
+        }
+        DeveloperSignature()
     }
 }
 

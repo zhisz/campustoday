@@ -20,6 +20,8 @@ class ApiClient(private val tokenProvider: () -> String?) {
         connection.readTimeout = 20_000
         connection.setRequestProperty("Accept", "application/json")
         connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+        connection.setRequestProperty("X-App-Version-Code", BuildConfig.VERSION_CODE.toString())
+        connection.setRequestProperty("X-App-Version-Name", BuildConfig.VERSION_NAME)
         tokenProvider()?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
         if (body != null) {
             connection.doOutput = true

@@ -18,6 +18,31 @@ mobile_api = Blueprint("mobile_api", __name__, url_prefix="/api/v1")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]{3,40}$")
 
 
+@mobile_api.before_request
+def require_current_app_version():
+    if request.path == "/api/v1/app/version":
+        return None
+    releases = load_releases()
+    if not releases or not releases[0].get("mandatory"):
+        return None
+    latest = releases[0]
+    try:
+        supplied = int(request.headers.get("X-App-Version-Code", "0"))
+    except ValueError:
+        supplied = 0
+    if supplied >= int(latest.get("version_code", 0)):
+        return None
+    return jsonify(
+        error=f"当前 App 版本已停用，请更新到 v{latest.get('version_name', '')}",
+        upgrade_required=True,
+        latest={
+            "version_code": latest.get("version_code"),
+            "version_name": latest.get("version_name"),
+            "download_url": request.url_root.rstrip("/") + "/download/" + latest.get("filename", ""),
+        },
+    ), 401
+
+
 def _json_error(message, status=400):
     return jsonify(error=message), status
 

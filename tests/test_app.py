@@ -150,6 +150,17 @@ class AppTest(unittest.TestCase):
         self.assertIn("下载最新版 APK", self.client.get("/app").get_data(as_text=True))
         self.assertIn("https://github.com/zhisz/campustoday", self.client.get("/app").get_data(as_text=True))
 
+    def test_mandatory_release_rejects_old_clients(self):
+        releases = [{"version_code": 7, "version_name": "1.2.1", "filename": "campustoday-1.2.1.apk", "mandatory": True}]
+        with open(f"{self.tmp.name}/apks/releases.json", "w", encoding="utf-8") as handle:
+            json.dump(releases, handle)
+        payload = {"username": "forced_update_user", "password": "strong-pass-123"}
+        blocked = self.client.post("/api/v1/auth/register", json=payload, headers={"X-App-Version-Code": "6"})
+        self.assertEqual(blocked.status_code, 401)
+        self.assertTrue(blocked.json["upgrade_required"])
+        current = self.client.post("/api/v1/auth/register", json=payload, headers={"X-App-Version-Code": "7"})
+        self.assertEqual(current.status_code, 201)
+
     def test_announcements_and_nonanonymous_feedback(self):
         registered = self.client.post("/api/v1/auth/register", json={"username": "feedback_user", "password": "strong-pass-123"})
         headers = {"Authorization": f"Bearer {registered.json['token']}"}
