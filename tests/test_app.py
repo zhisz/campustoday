@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import uuid
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 
 class AppTest(unittest.TestCase):
@@ -43,20 +44,26 @@ class AppTest(unittest.TestCase):
             token = current_session["csrf"]
         cookie_value = "private-test-cookie"
         cookie = f"MOD_AUTH_CAS={cookie_value}"
-        response = self.client.post("/accounts", data={"csrf": token, "name": "测试账号", "session_cookie": cookie_value, "auto_enabled": "true"})
+        campus_client = MagicMock()
+        campus_client.identity.return_value = {"user_name": "李尚智", "user_id": "1247598866"}
+        with patch("app.campus_accounts.create_client", return_value=campus_client):
+            response = self.client.post("/accounts", data={"csrf": token, "name": "测试账号", "session_cookie": cookie_value, "auto_enabled": "true"})
         self.assertEqual(response.status_code, 302)
         page = self.client.get("/accounts").get_data(as_text=True)
-        self.assertIn("测试账号", page)
+        self.assertIn("李尚智", page)
+        self.assertIn("已通过学校门户验证，不可修改", page)
+        self.assertIn("readonly", page)
         self.assertNotIn(cookie, page)
         from app.db import connect
         with connect() as db:
-            account = db.execute("SELECT id,auto_enabled FROM campus_accounts").fetchone()
+            account = db.execute("SELECT id,name,real_name,campus_user_id,auto_enabled FROM campus_accounts").fetchone()
+        self.assertEqual((account["name"], account["real_name"], account["campus_user_id"]), ("李尚智", "李尚智", "1247598866"))
         cooldown = self.client.post(f"/accounts/{account['id']}/check", data={"csrf": token}, follow_redirects=True)
         self.assertIn("60 秒内的最近结果", cooldown.get_data(as_text=True))
         self.client.post(f"/accounts/{account['id']}/update", data={"csrf": token, "name": "新名称", "session_cookie": "", "auto_enabled": "false", "device_id": "device-new", "device_model": "New Model", "system_name": "Android", "system_version": "17"})
         with connect() as db:
             updated = db.execute("SELECT name,auto_enabled,session_cookie,device_id,device_model,system_version FROM campus_accounts WHERE id=?", (account["id"],)).fetchone()
-        self.assertEqual((updated["name"], updated["auto_enabled"], updated["session_cookie"]), ("新名称", 0, cookie))
+        self.assertEqual((updated["name"], updated["auto_enabled"], updated["session_cookie"]), ("李尚智", 0, cookie))
         self.assertEqual((updated["device_id"], updated["device_model"], updated["system_version"]), ("device-new", "New Model", "17"))
         toggle = self.client.post(f"/accounts/{account['id']}/toggle", data={"csrf": token, "enabled": "true"})
         self.assertEqual(toggle.status_code, 302)

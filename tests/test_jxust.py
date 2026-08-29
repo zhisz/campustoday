@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from campus.attendance import AttendanceTask
 from campus.device import DeviceProfile
-from campus.jxust import JxustAttendanceClient
+from campus.jxust import JxustAttendanceClient, ProtocolError
 
 
 class FakeResponse:
@@ -54,6 +54,26 @@ class JxustClientTest(unittest.TestCase):
         self.assertEqual(tasks[0].task_id, "i1")
         self.assertEqual(tasks[0].sign_wid, "s1")
         self.assertFalse(tasks[0].completed)
+
+    def test_identity_uses_portal_endpoint_and_returns_verified_name(self):
+        envelope = {
+            "code": "0",
+            "message": "SUCCESS",
+            "datas": {"hasLogin": True, "userName": "李尚智", "userId": "1247598866"},
+        }
+        with patch("urllib.request.OpenerDirector.open", return_value=FakeResponse(envelope)) as opened:
+            identity = JxustAttendanceClient().identity()
+        request = opened.call_args.args[0]
+        self.assertTrue(request.full_url.endswith(JxustAttendanceClient.IDENTITY_PATH))
+        self.assertEqual(request.data, b"")
+        self.assertEqual(request.get_header("Content-type"), "application/x-www-form-urlencoded; charset=UTF-8")
+        self.assertEqual(identity, {"user_name": "李尚智", "user_id": "1247598866"})
+
+    def test_identity_rejects_anonymous_portal_response(self):
+        envelope = {"code": "0", "message": "SUCCESS", "datas": {"hasLogin": False}}
+        with patch("urllib.request.OpenerDirector.open", return_value=FakeResponse(envelope)):
+            with self.assertRaisesRegex(ProtocolError, "not logged in"):
+                JxustAttendanceClient().identity()
 
     def test_detail_sends_only_verified_identifiers(self):
         task = AttendanceTask("i1", "s1", "晚查寝", "", "", False, True)

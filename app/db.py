@@ -123,6 +123,11 @@ def migrate():
             if value:
                 db.execute(f"UPDATE campus_accounts SET {column}=? WHERE {column} IS NULL OR {column}=''", (value,))
         db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (5, CURRENT_TIMESTAMP)")
+        account_columns = {row["name"] for row in db.execute("PRAGMA table_info(campus_accounts)")}
+        for name in ("real_name", "campus_user_id", "identity_verified_at"):
+            if name not in account_columns:
+                db.execute(f"ALTER TABLE campus_accounts ADD COLUMN {name} TEXT")
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (6, CURRENT_TIMESTAMP)")
 
 
 def log_event(event: str, message: str, level: str = "INFO", metadata=None):

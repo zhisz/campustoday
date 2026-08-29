@@ -11,7 +11,7 @@ DEVICE_COLUMNS = "device_id,app_version,device_model,system_name,system_version"
 
 
 def list_accounts(include_cookie=False):
-    columns = f"id,name,auto_enabled,session_status,last_checked_at,last_error,created_at,updated_at,{DEVICE_COLUMNS}"
+    columns = f"id,name,real_name,campus_user_id,identity_verified_at,auto_enabled,session_status,last_checked_at,last_error,created_at,updated_at,{DEVICE_COLUMNS}"
     if include_cookie:
         columns += ",session_cookie"
     with connect() as db:
@@ -20,7 +20,7 @@ def list_accounts(include_cookie=False):
 
 
 def get_account(account_id, include_cookie=False):
-    columns = f"id,name,auto_enabled,session_status,last_checked_at,last_error,created_at,updated_at,{DEVICE_COLUMNS}"
+    columns = f"id,name,real_name,campus_user_id,identity_verified_at,auto_enabled,session_status,last_checked_at,last_error,created_at,updated_at,{DEVICE_COLUMNS}"
     if include_cookie:
         columns += ",session_cookie"
     with connect() as db:
@@ -49,6 +49,8 @@ def update_account(account_id, name, session_cookie, auto_enabled, device=None):
     existing = get_account(account_id, include_cookie=True)
     if not existing:
         return False
+    if existing.get("real_name"):
+        name = existing["real_name"]
     cookie = session_cookie.strip() if session_cookie and session_cookie.strip() else existing["session_cookie"]
     name, cookie = _validate(name, cookie)
     device_values = {key: existing.get(key) for key in DEVICE_COLUMNS.split(",")}
@@ -57,7 +59,7 @@ def update_account(account_id, name, session_cookie, auto_enabled, device=None):
     cookie_changed = cookie != existing["session_cookie"]
     with connect() as db:
         db.execute(
-            "UPDATE campus_accounts SET name=?,session_cookie=?,auto_enabled=?,session_status=?,last_checked_at=?,last_error=?,updated_at=?,device_id=?,app_version=?,device_model=?,system_name=?,system_version=? WHERE id=?",
+            "UPDATE campus_accounts SET name=?,session_cookie=?,auto_enabled=?,session_status=?,last_checked_at=?,last_error=?,updated_at=?,device_id=?,app_version=?,device_model=?,system_name=?,system_version=?,real_name=?,campus_user_id=?,identity_verified_at=? WHERE id=?",
             (
                 name,
                 cookie,
@@ -71,6 +73,9 @@ def update_account(account_id, name, session_cookie, auto_enabled, device=None):
                 device["device_model"],
                 device["system_name"],
                 device["system_version"],
+                None if cookie_changed else existing["real_name"],
+                None if cookie_changed else existing["campus_user_id"],
+                None if cookie_changed else existing["identity_verified_at"],
                 account_id,
             ),
         )
@@ -87,21 +92,32 @@ def check_session(account_id):
     if not account:
         raise LookupError("签到账号不存在")
     last_checked = _parse_timestamp(account.get("last_checked_at"))
-    if last_checked and (datetime.now(timezone.utc) - last_checked).total_seconds() < 60:
+    if last_checked and account.get("real_name") and (datetime.now(timezone.utc) - last_checked).total_seconds() < 60:
         valid = account["session_status"] == "VALID"
-        return {"valid": valid, "cached": True, "error": account.get("last_error")}
+        return {"valid": valid, "cached": True, "error": account.get("last_error"), "real_name": account.get("real_name")}
     at = now_iso()
+    identity = None
     try:
-        tasks = create_client(account["session_cookie"]).list_today()
+        identity = create_client(account["session_cookie"]).identity()
         status, error = "VALID", None
-        result = {"valid": True, "task_count": len(tasks), "cached": False}
+        result = {"valid": True, "real_name": identity["user_name"], "cached": False}
     except Exception as exc:
         status, error = "INVALID", _safe_error(exc)
         result = {"valid": False, "error": error, "cached": False}
     with connect() as db:
         db.execute(
-            "UPDATE campus_accounts SET session_status=?,last_checked_at=?,last_error=?,updated_at=? WHERE id=?",
-            (status, at, error, at, account_id),
+            "UPDATE campus_accounts SET session_status=?,last_checked_at=?,last_error=?,updated_at=?,name=COALESCE(?,name),real_name=?,campus_user_id=?,identity_verified_at=? WHERE id=?",
+            (
+                status,
+                at,
+                error,
+                at,
+                identity["user_name"] if identity else None,
+                identity["user_name"] if identity else account.get("real_name"),
+                identity["user_id"] if identity else account.get("campus_user_id"),
+                at if status == "VALID" else account.get("identity_verified_at"),
+                account_id,
+            ),
         )
     return result
 

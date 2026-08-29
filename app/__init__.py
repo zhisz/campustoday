@@ -123,7 +123,7 @@ def create_app():
                 _device_form(request.form),
             )
             result = check_session(account_id)
-            flash("账号已添加，会话有效" if result["valid"] else "账号已添加，但 Cookie 验证失败")
+            flash(f"账号已添加，已识别登录用户：{result['real_name']}" if result["valid"] else "账号已添加，但 Cookie 验证失败")
             log_event("CAMPUS_ACCOUNT_CREATED", f"Campus account {account_id} created")
         except ValueError as exc:
             flash(str(exc))
@@ -156,9 +156,9 @@ def create_app():
             abort(404)
         result = check_session(account_id)
         if result.get("cached"):
-            flash("检测过于频繁，已使用 60 秒内的最近结果")
+            flash(f"检测过于频繁，已使用 60 秒内的最近结果：{result.get('real_name') or '未识别'}")
         else:
-            flash(f"会话有效，当日返回 {result['task_count']} 个任务" if result["valid"] else f"会话检测失败：{result['error']}")
+            flash(f"会话有效，登录用户：{result['real_name']}" if result["valid"] else f"会话检测失败：{result['error']}")
         log_event("CAMPUS_SESSION_CHECKED", f"Campus account {account_id}: {'valid' if result['valid'] else 'invalid'}")
         if request.form.get("next") == "dashboard":
             return redirect(url_for("dashboard", account=account_id))

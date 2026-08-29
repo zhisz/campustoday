@@ -26,6 +26,7 @@ class JxustAttendanceClient(AttendanceClient):
     DETAIL_PATH = "/wec-counselor-attendance-apps/student/attendance/detailSignInstance"
     HISTORY_PATH = "/wec-counselor-attendance-apps/student/attendance/getStuSignInfosByWeekMonth"
     SUBMIT_PATH = "/wec-counselor-attendance-apps/student/attendance/submitSign"
+    IDENTITY_PATH = "/portal/portal/getLoginUserInfo"
 
     def __init__(self, session_cookie: Optional[str] = None, device_profile=None):
         self.base_url = os.getenv("CPDAILY_BASE_URL", "https://fdm.jxust.edu.cn").rstrip("/")
@@ -77,6 +78,17 @@ class JxustAttendanceClient(AttendanceClient):
                     )
                 )
         return tasks
+
+    def identity(self) -> dict:
+        """Return the identity attached to the current portal session."""
+        datas = self._portal_post(self.IDENTITY_PATH)
+        if not isinstance(datas, dict) or datas.get("hasLogin") is not True:
+            raise ProtocolError("Portal session is not logged in")
+        user_name = str(datas.get("userName") or "").strip()
+        user_id = str(datas.get("userId") or "").strip()
+        if not user_name:
+            raise ProtocolError("Portal identity response has no user name")
+        return {"user_name": user_name, "user_id": user_id}
 
     def detail(self, task: AttendanceTask) -> dict:
         result = self._post(
@@ -163,6 +175,43 @@ class JxustAttendanceClient(AttendanceClient):
             raise ProtocolError("Attendance API returned invalid JSON") from None
         if not isinstance(envelope, dict) or str(envelope.get("code")) != "0":
             raise ProtocolError("Attendance API returned a business error")
+        return envelope.get("datas")
+
+    def _portal_post(self, path: str):
+        target = self.base_url + path
+        if urllib.parse.urlsplit(target).hostname != self.allowed_host:
+            raise RuntimeError("Refusing to send credentials to an unexpected host")
+        request = urllib.request.Request(
+            target,
+            data=b"",
+            method="POST",
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Cookie": self.cookie,
+                "Origin": self.base_url,
+                "Referer": self.base_url + "/portal/index.html",
+                "User-Agent": os.getenv(
+                    "CPDAILY_USER_AGENT",
+                    "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Mobile Safari/537.36",
+                ),
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+        try:
+            with opener.open(request, timeout=self.timeout) as response:
+                raw = response.read(2_000_000)
+        except urllib.error.HTTPError as exc:
+            raise ProtocolError(f"Portal API returned HTTP {exc.code}") from None
+        except urllib.error.URLError as exc:
+            raise ProtocolError("Portal API request failed") from exc
+        try:
+            envelope = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ProtocolError("Portal API returned invalid JSON") from None
+        if not isinstance(envelope, dict) or str(envelope.get("code")) != "0":
+            raise ProtocolError("Portal API returned a business error")
         return envelope.get("datas")
 
 
