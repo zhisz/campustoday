@@ -10,17 +10,20 @@ MAX_ACCOUNTS = 20
 DEVICE_COLUMNS = "device_id,app_version,device_model,system_name,system_version"
 
 
-def list_accounts(include_cookie=False):
-    columns = f"id,name,real_name,campus_user_id,identity_verified_at,auto_enabled,session_status,last_checked_at,last_error,created_at,updated_at,{DEVICE_COLUMNS}"
+def list_accounts(include_cookie=False, owner_user_id=None):
+    columns = f"id,name,real_name,campus_user_id,identity_verified_at,owner_user_id,auto_enabled,session_status,last_checked_at,last_error,created_at,updated_at,{DEVICE_COLUMNS},(SELECT username FROM app_users WHERE id=campus_accounts.owner_user_id) AS owner_username"
     if include_cookie:
         columns += ",session_cookie"
     with connect() as db:
-        rows = db.execute(f"SELECT {columns} FROM campus_accounts ORDER BY id").fetchall()
+        if owner_user_id is None:
+            rows = db.execute(f"SELECT {columns} FROM campus_accounts ORDER BY id").fetchall()
+        else:
+            rows = db.execute(f"SELECT {columns} FROM campus_accounts WHERE owner_user_id=? ORDER BY id", (owner_user_id,)).fetchall()
     return [dict(row) for row in rows]
 
 
 def get_account(account_id, include_cookie=False):
-    columns = f"id,name,real_name,campus_user_id,identity_verified_at,auto_enabled,session_status,last_checked_at,last_error,created_at,updated_at,{DEVICE_COLUMNS}"
+    columns = f"id,name,real_name,campus_user_id,identity_verified_at,owner_user_id,auto_enabled,session_status,last_checked_at,last_error,created_at,updated_at,{DEVICE_COLUMNS},(SELECT username FROM app_users WHERE id=campus_accounts.owner_user_id) AS owner_username"
     if include_cookie:
         columns += ",session_cookie"
     with connect() as db:
@@ -28,19 +31,22 @@ def get_account(account_id, include_cookie=False):
     return dict(row) if row else None
 
 
-def create_account(name, session_cookie, auto_enabled, device=None):
+def create_account(name, session_cookie, auto_enabled, device=None, owner_user_id=None):
     name, session_cookie = _validate(name, session_cookie)
     device_values = device_defaults()
     device_values.update({key: value for key, value in (device or {}).items() if value is not None})
     device = _validate_device(device_values)
     at = now_iso()
     with connect() as db:
-        count = db.execute("SELECT COUNT(*) FROM campus_accounts").fetchone()[0]
+        if owner_user_id is None:
+            count = db.execute("SELECT COUNT(*) FROM campus_accounts WHERE owner_user_id IS NULL").fetchone()[0]
+        else:
+            count = db.execute("SELECT COUNT(*) FROM campus_accounts WHERE owner_user_id=?", (owner_user_id,)).fetchone()[0]
         if count >= MAX_ACCOUNTS:
             raise ValueError(f"最多可添加 {MAX_ACCOUNTS} 个签到账号")
         cursor = db.execute(
-            "INSERT INTO campus_accounts(name,session_cookie,auto_enabled,created_at,updated_at,device_id,app_version,device_model,system_name,system_version) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (name, session_cookie, int(auto_enabled), at, at, device["device_id"], device["app_version"], device["device_model"], device["system_name"], device["system_version"]),
+            "INSERT INTO campus_accounts(name,session_cookie,auto_enabled,created_at,updated_at,device_id,app_version,device_model,system_name,system_version,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (name, session_cookie, int(auto_enabled), at, at, device["device_id"], device["app_version"], device["device_model"], device["system_name"], device["system_version"], owner_user_id),
         )
         return cursor.lastrowid
 

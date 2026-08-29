@@ -128,6 +128,32 @@ def migrate():
             if name not in account_columns:
                 db.execute(f"ALTER TABLE campus_accounts ADD COLUMN {name} TEXT")
         db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (6, CURRENT_TIMESTAMP)")
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS app_users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+          password_hash TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'ACTIVE',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_login_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS app_tokens (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+          token_hash TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          last_used_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          revoked_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_tokens_user ON app_tokens(user_id);
+        """)
+        account_columns = {row["name"] for row in db.execute("PRAGMA table_info(campus_accounts)")}
+        if "owner_user_id" not in account_columns:
+            db.execute("ALTER TABLE campus_accounts ADD COLUMN owner_user_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_campus_accounts_owner ON campus_accounts(owner_user_id)")
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, CURRENT_TIMESTAMP)")
 
 
 def log_event(event: str, message: str, level: str = "INFO", metadata=None):

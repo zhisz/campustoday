@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 import uuid
@@ -9,7 +10,8 @@ from unittest.mock import MagicMock, patch
 class AppTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", CPDAILY_MODE="disabled", CPDAILY_SESSION_COOKIE="", AUTO_ENABLED="false", LOCATION_MODE="trusted_device", LOCATION_PROOF_TOKEN="proof-secret", LOCATION_MAX_AGE_SECONDS="300", LOCATION_MAX_ACCURACY_METERS="100", CPDAILY_DEVICE_ID="device-default", CPDAILY_APP_VERSION="9.9.6", CPDAILY_DEVICE_MODEL="Default Model", CPDAILY_SYSTEM_NAME="Android", CPDAILY_SYSTEM_VERSION="16")
+        os.makedirs(f"{self.tmp.name}/apks")
+        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", APKS_PATH=f"{self.tmp.name}/apks", CPDAILY_MODE="disabled", CPDAILY_SESSION_COOKIE="", AUTO_ENABLED="false", LOCATION_MODE="trusted_device", LOCATION_PROOF_TOKEN="proof-secret", LOCATION_MAX_AGE_SECONDS="300", LOCATION_MAX_ACCURACY_METERS="100", CPDAILY_DEVICE_ID="device-default", CPDAILY_APP_VERSION="9.9.6", CPDAILY_DEVICE_MODEL="Default Model", CPDAILY_SYSTEM_NAME="Android", CPDAILY_SYSTEM_VERSION="16")
         from app import create_app
         self.app = create_app(); self.app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
         self.client = self.app.test_client()
@@ -106,6 +108,44 @@ class AppTest(unittest.TestCase):
         response = self.client.post("/api/location/proof", json=payload, headers={"Authorization": "Bearer proof-secret"})
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json["reason"], "LOCATION_ACCURACY_TOO_LOW")
+
+    def test_mobile_users_only_see_their_own_accounts(self):
+        def register(username):
+            response = self.client.post("/api/v1/auth/register", json={"username": username, "password": "strong-pass-123"})
+            self.assertEqual(response.status_code, 201)
+            return {"Authorization": f"Bearer {response.json['token']}"}
+
+        first, second = register("first_user"), register("second_user")
+        campus_client = MagicMock()
+        campus_client.identity.return_value = {"user_name": "李尚智", "user_id": "student-1"}
+        payload = {
+            "session_cookie": "private-campus-cookie",
+            "device": {"device_id": "android-id", "app_version": "1.0.0", "model": "Pixel", "system_name": "Android", "system_version": "16"},
+        }
+        with patch("app.campus_accounts.create_client", return_value=campus_client):
+            created = self.client.post("/api/v1/accounts", json=payload, headers=first)
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json["account"]["name"], "李尚智")
+        self.assertFalse(created.json["account"]["auto_enabled"])
+        account_id = created.json["account"]["id"]
+        self.assertEqual(len(self.client.get("/api/v1/accounts", headers=first).json["accounts"]), 1)
+        self.assertEqual(self.client.get("/api/v1/accounts", headers=second).json["accounts"], [])
+        self.assertEqual(self.client.get(f"/api/v1/accounts/{account_id}", headers=second).status_code, 404)
+        toggled = self.client.patch(f"/api/v1/accounts/{account_id}", json={"auto_enabled": True}, headers=first)
+        self.assertTrue(toggled.json["account"]["auto_enabled"])
+
+    def test_mobile_release_metadata_and_download(self):
+        apk = f"{self.tmp.name}/apks/campustoday-1.0.0.apk"
+        with open(apk, "wb") as handle:
+            handle.write(b"test-apk")
+        releases = [{"version_code": 1, "version_name": "1.0.0", "filename": "campustoday-1.0.0.apk", "sha256": "abc", "size_label": "8 B", "release_notes": "first", "mandatory": False}]
+        with open(f"{self.tmp.name}/apks/releases.json", "w", encoding="utf-8") as handle:
+            json.dump(releases, handle)
+        version = self.client.get("/api/v1/app/version")
+        self.assertEqual(version.status_code, 200)
+        self.assertTrue(version.json["download_url"].endswith("/download/campustoday-1.0.0.apk"))
+        self.assertEqual(self.client.get("/download/campustoday-1.0.0.apk").data, b"test-apk")
+        self.assertIn("下载最新版 APK", self.client.get("/app").get_data(as_text=True))
 
 
 if __name__ == "__main__": unittest.main()

@@ -7,15 +7,16 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template_string, request, session, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template_string, request, send_from_directory, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .campus_accounts import check_session, create_account, delete_account, device_defaults, get_account, list_accounts, update_account
 from .dashboard import build_dashboard, invalidate_school_cache
 from .db import connect, get_setting, log_event, migrate, now_iso, set_settings
 from .location import verify_location
+from .mobile_api import load_releases, mobile_api
 from .scheduler import start_scheduler, status as scheduler_status
-from .templates import ACCOUNTS, BASE, DASHBOARD, LOGIN, SETTINGS, TABLE
+from .templates import ACCOUNTS, APP_USERS, BASE, DASHBOARD, LOGIN, MOBILE_LANDING, SETTINGS, TABLE
 
 
 def create_app():
@@ -28,6 +29,7 @@ def create_app():
     migrate()
     _ensure_admin()
     start_scheduler()
+    app.register_blueprint(mobile_api)
 
     @app.context_processor
     def helpers():
@@ -38,7 +40,7 @@ def create_app():
 
     @app.before_request
     def csrf_check():
-        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.endpoint != "location_proof":
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.endpoint != "location_proof" and not request.path.startswith("/api/v1/"):
             if not hmac.compare_digest(session.get("csrf", ""), request.form.get("csrf", "")):
                 abort(400)
 
@@ -66,6 +68,17 @@ def create_app():
     @app.get("/")
     def index():
         return redirect(url_for("dashboard") if session.get("user") else url_for("login"))
+
+    @app.get("/app")
+    def mobile_landing():
+        releases = load_releases()
+        return render_template_string(MOBILE_LANDING, latest=releases[0] if releases else None)
+
+    @app.get("/download/<path:filename>")
+    def mobile_download(filename):
+        if filename not in {item.get("filename") for item in load_releases()}:
+            abort(404)
+        return send_from_directory(os.getenv("APKS_PATH", "/data/apks"), filename, as_attachment=True)
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -111,6 +124,31 @@ def create_app():
     @protected
     def campus_accounts():
         return page("签到账号", ACCOUNTS, accounts=list_accounts(), device_defaults=device_defaults())
+
+    @app.get("/app-users")
+    @protected
+    def app_users():
+        with connect() as db:
+            users = db.execute(
+                "SELECT u.id,u.username,u.status,u.last_login_at,u.created_at,COUNT(a.id) AS account_count "
+                "FROM app_users u LEFT JOIN campus_accounts a ON a.owner_user_id=u.id GROUP BY u.id ORDER BY u.id DESC"
+            ).fetchall()
+        return page("App 用户", APP_USERS, users=users)
+
+    @app.post("/app-users/<int:user_id>/toggle")
+    @protected
+    def app_user_toggle(user_id):
+        status = request.form.get("status")
+        if status not in {"ACTIVE", "DISABLED"}:
+            abort(400)
+        with connect() as db:
+            if not db.execute("SELECT 1 FROM app_users WHERE id=?", (user_id,)).fetchone():
+                abort(404)
+            db.execute("UPDATE app_users SET status=?,updated_at=? WHERE id=?", (status, now_iso(), user_id))
+            if status == "DISABLED":
+                db.execute("UPDATE app_tokens SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now_iso(), user_id))
+        flash("用户状态已更新")
+        return redirect(url_for("app_users"))
 
     @app.post("/accounts")
     @protected
