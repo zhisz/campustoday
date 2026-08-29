@@ -6,6 +6,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template_string, request, send_from_directory, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -158,10 +159,18 @@ def create_app():
         if request.method == "POST":
             title = request.form.get("title", "").strip()
             content = request.form.get("content", "").strip()
-            if not title or len(title) > 120 or not content or len(content) > 2000:
+            try:
+                starts_at = datetime.fromisoformat(request.form.get("starts_at", "")).replace(tzinfo=ZoneInfo("Asia/Shanghai")).astimezone(timezone.utc)
+                ends_at = datetime.fromisoformat(request.form.get("ends_at", "")).replace(tzinfo=ZoneInfo("Asia/Shanghai")).astimezone(timezone.utc)
+            except ValueError:
+                abort(400)
+            if not title or len(title) > 120 or not content or len(content) > 2000 or ends_at <= starts_at:
                 abort(400)
             with connect() as db:
-                db.execute("INSERT INTO announcements(title,content,published,created_at) VALUES(?,?,1,?)", (title, content, now_iso()))
+                db.execute(
+                    "INSERT INTO announcements(title,content,published,created_at,starts_at,ends_at) VALUES(?,?,1,?,?,?)",
+                    (title, content, now_iso(), starts_at.isoformat(timespec="seconds"), ends_at.isoformat(timespec="seconds")),
+                )
             log_event("ANNOUNCEMENT_PUBLISHED", "Administrator published an announcement")
             flash("公告已推送给所有 App 用户")
             return redirect(url_for("announcements"))
@@ -171,7 +180,16 @@ def create_app():
                 "LEFT JOIN announcement_reads r ON r.announcement_id=a.id GROUP BY a.id ORDER BY a.id DESC"
             ).fetchall()
             user_count = db.execute("SELECT COUNT(*) FROM app_users WHERE status='ACTIVE'").fetchone()[0]
-        return page("公告", ANNOUNCEMENTS, announcements=rows, user_count=user_count)
+        current = datetime.now(ZoneInfo("Asia/Shanghai"))
+        announcements_view = []
+        for row in rows:
+            item = dict(row)
+            for source, target in (("starts_at", "starts_display"), ("ends_at", "ends_display")):
+                value = item.get(source)
+                item[target] = datetime.fromisoformat(value).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M") if value else "长期有效"
+            announcements_view.append(item)
+        return page("公告", ANNOUNCEMENTS, announcements=announcements_view, user_count=user_count,
+                    default_start=current.strftime("%Y-%m-%dT%H:%M"), default_end=(current + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M"), now=now_iso())
 
     @app.post("/announcements/<int:announcement_id>/withdraw")
     @protected
@@ -181,6 +199,16 @@ def create_app():
         if not changed:
             abort(404)
         flash("公告已撤回")
+        return redirect(url_for("announcements"))
+
+    @app.post("/announcements/<int:announcement_id>/delete")
+    @protected
+    def announcement_delete(announcement_id):
+        with connect() as db:
+            changed = db.execute("DELETE FROM announcements WHERE id=?", (announcement_id,)).rowcount
+        if not changed:
+            abort(404)
+        flash("历史公告已永久删除")
         return redirect(url_for("announcements"))
 
     @app.get("/feedback")

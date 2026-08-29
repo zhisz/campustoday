@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 
@@ -156,18 +156,33 @@ class AppTest(unittest.TestCase):
         self.login()
         with self.client.session_transaction() as current_session:
             csrf = current_session["csrf"]
-        published = self.client.post("/announcements", data={"csrf": csrf, "title": "维护通知", "content": "今晚服务更新"})
+        local_now = datetime.now()
+        published = self.client.post("/announcements", data={"csrf": csrf, "title": "维护通知", "content": "今晚服务更新",
+            "starts_at": (local_now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
+            "ends_at": (local_now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")})
         self.assertEqual(published.status_code, 302)
         notices = self.client.get("/api/v1/announcements", headers=headers).json["announcements"]
         self.assertEqual(notices[0]["title"], "维护通知")
-        self.assertFalse(notices[0]["is_read"])
+        self.assertIs(notices[0]["is_read"], False)
         self.assertEqual(self.client.post(f"/api/v1/announcements/{notices[0]['id']}/read", headers=headers).status_code, 200)
-        self.assertTrue(self.client.get("/api/v1/announcements", headers=headers).json["announcements"][0]["is_read"])
+        self.assertIs(self.client.get("/api/v1/announcements", headers=headers).json["announcements"][0]["is_read"], True)
         response = self.client.post("/api/v1/feedback", json={"category": "界面建议", "content": "希望按钮更明显"}, headers=headers)
         self.assertEqual(response.status_code, 201)
         page = self.client.get("/feedback").get_data(as_text=True)
         self.assertIn("feedback_user", page)
         self.assertIn("希望按钮更明显", page)
+        history = self.client.get("/announcements").get_data(as_text=True)
+        self.assertIn("历史公告", history)
+        self.assertIn("生效中", history)
+        self.client.post(f"/announcements/{notices[0]['id']}/withdraw", data={"csrf": csrf})
+        self.assertEqual(self.client.get("/api/v1/announcements", headers=headers).json["announcements"], [])
+        self.client.post(f"/announcements/{notices[0]['id']}/delete", data={"csrf": csrf})
+        self.assertNotIn("今晚服务更新", self.client.get("/announcements").get_data(as_text=True))
+        self.client.post("/announcements", data={"csrf": csrf, "title": "定时公告", "content": "稍后显示",
+            "starts_at": (local_now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+            "ends_at": (local_now + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M")})
+        self.assertEqual(self.client.get("/api/v1/announcements", headers=headers).json["announcements"], [])
+        self.assertIn("待生效", self.client.get("/announcements").get_data(as_text=True))
 
     def test_mobile_user_claims_matching_legacy_account_without_duplicate(self):
         from app.campus_accounts import check_session, create_account

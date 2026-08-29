@@ -180,6 +180,12 @@ def migrate():
         CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback(user_id);
         """)
         db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (8, CURRENT_TIMESTAMP)")
+        announcement_columns = {row["name"] for row in db.execute("PRAGMA table_info(announcements)")}
+        for name in ("starts_at", "ends_at"):
+            if name not in announcement_columns:
+                db.execute(f"ALTER TABLE announcements ADD COLUMN {name} TEXT")
+        db.execute("UPDATE announcements SET starts_at=created_at WHERE starts_at IS NULL OR starts_at='' ")
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (9, CURRENT_TIMESTAMP)")
 
 
 def log_event(event: str, message: str, level: str = "INFO", metadata=None):

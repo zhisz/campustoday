@@ -25,6 +25,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.Executors
@@ -73,10 +77,10 @@ class AppController(private val activity: ComponentActivity) {
     fun loadAccounts() = run {
         val result = api.get("/api/v1/accounts")
         accounts = parseAccounts(result.getJSONArray("accounts"))
-        val noticeResult = api.get("/api/v1/announcements")
-        announcements = jsonObjects(noticeResult.getJSONArray("announcements"))
-        if (activeAnnouncement == null) activeAnnouncement = announcements.firstOrNull { !it.optBoolean("is_read") }
+        syncAnnouncements()
     }
+
+    fun loadAnnouncements() = runSilent { syncAnnouncements() }
 
     fun addCampusAccount(cookie: String, onDone: () -> Unit) = run {
         val body = JSONObject().put("session_cookie", cookie).put("device", deviceInfo(activity))
@@ -123,16 +127,11 @@ class AppController(private val activity: ComponentActivity) {
         else if (showLatest) message = "当前已是最新版本"
     }
 
-    fun showAnnouncements() {
-        activeAnnouncement = announcements.firstOrNull()
-        if (activeAnnouncement == null) message = "暂时没有公告"
-    }
-
     fun markAnnouncementRead() {
         val item = activeAnnouncement ?: return
-        activeAnnouncement = null
         announcements = announcements.map { if (it.optInt("id") == item.optInt("id")) JSONObject(it.toString()).put("is_read", true) else it }
-        run { api.post("/api/v1/announcements/${item.getInt("id")}/read") }
+        activeAnnouncement = announcements.firstOrNull { !it.optBoolean("is_read") }
+        runSilent { api.post("/api/v1/announcements/${item.getInt("id")}/read") }
     }
 
     fun sendFeedback(category: String, content: String, onDone: () -> Unit) = run {
@@ -160,6 +159,24 @@ class AppController(private val activity: ComponentActivity) {
                 }
             } finally { activity.runOnUiThread { busy = false } }
         }
+    }
+
+    private fun runSilent(block: () -> Unit) {
+        if (!authenticated) return
+        executor.execute {
+            try { block() }
+            catch (exc: Exception) {
+                if (exc is ApiException && exc.status == 401) activity.runOnUiThread {
+                    store.token = null; authenticated = false
+                }
+            }
+        }
+    }
+
+    private fun syncAnnouncements() {
+        val result = api.get("/api/v1/announcements")
+        announcements = jsonObjects(result.getJSONArray("announcements"))
+        if (activeAnnouncement == null) activeAnnouncement = announcements.firstOrNull { !it.optBoolean("is_read") }
     }
 
     private fun parseAccounts(array: JSONArray) = (0 until array.length()).map { parseAccount(array.getJSONObject(it)) }
@@ -190,7 +207,21 @@ fun CampusTheme(content: @Composable () -> Unit) {
 fun CampusApp(controller: AppController) {
     var screen by remember { mutableStateOf(if (controller.authenticated) "home" else "auth") }
     var showFeedback by remember { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(controller.authenticated) { screen = if (controller.authenticated) "home" else "auth" }
+    DisposableEffect(lifecycleOwner, controller.authenticated) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && controller.authenticated) controller.loadAnnouncements()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(controller.authenticated) {
+        while (controller.authenticated) {
+            delay(15_000)
+            controller.loadAnnouncements()
+        }
+    }
     BackHandler(enabled = screen == "detail" || screen == "school") { screen = "home" }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
         when (screen) {
@@ -249,10 +280,7 @@ fun HomeScreen(controller: AppController, onAdd: () -> Unit, onFeedback: () -> U
             Button(onClick = onAdd, modifier = Modifier.weight(1f)) { Text("+添加校园账号") }
             OutlinedButton(onClick = { controller.loadAccounts() }) { Text("刷新") }
         }
-        Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(onClick = { controller.showAnnouncements() }, Modifier.weight(1f)) { Text("公告${controller.announcements.count { !it.optBoolean("is_read") }.takeIf { it > 0 }?.let { " ($it)" } ?: ""}") }
-            OutlinedButton(onClick = onFeedback, Modifier.weight(1f)) { Text("提交反馈") }
-        }
+        OutlinedButton(onClick = onFeedback, Modifier.fillMaxWidth().padding(bottom = 12.dp)) { Text("提交反馈") }
         if (controller.accounts.isEmpty()) EmptyCard("还没有账号", "点击上方按钮，在学校页面完成登录即可添加。")
         controller.accounts.forEach { account -> AccountCard(account, onClick = { onAccount(account) }, onToggle = { controller.toggle(account) }) }
         OutlinedButton(onClick = { controller.checkUpdate() }, Modifier.fillMaxWidth().padding(top = 12.dp)) { Text("检查 App 更新") }

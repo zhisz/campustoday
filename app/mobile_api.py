@@ -269,11 +269,17 @@ def app_version():
 def announcements_list():
     with connect() as db:
         rows = db.execute(
-            "SELECT a.id,a.title,a.content,a.created_at,CASE WHEN r.user_id IS NULL THEN 0 ELSE 1 END AS is_read "
+            "SELECT a.id,a.title,a.content,a.created_at,a.starts_at,a.ends_at,CASE WHEN r.user_id IS NULL THEN 0 ELSE 1 END AS is_read "
             "FROM announcements a LEFT JOIN announcement_reads r ON r.announcement_id=a.id AND r.user_id=? "
-            "WHERE a.published=1 ORDER BY a.id DESC LIMIT 20", (g.app_user["id"],)
+            "WHERE a.published=1 AND COALESCE(a.starts_at,a.created_at)<=? AND (a.ends_at IS NULL OR a.ends_at>?) "
+            "ORDER BY a.id DESC LIMIT 20", (g.app_user["id"], now_iso(), now_iso())
         ).fetchall()
-    return jsonify(announcements=[dict(row) for row in rows])
+    announcements = []
+    for row in rows:
+        item = dict(row)
+        item["is_read"] = bool(item["is_read"])
+        announcements.append(item)
+    return jsonify(announcements=announcements)
 
 
 @mobile_api.post("/announcements/<int:announcement_id>/read")
