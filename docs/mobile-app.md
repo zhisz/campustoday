@@ -1,0 +1,24 @@
+# CampusToday Android
+
+Android 客户端用于注册独立的 App 用户、通过学校门户登录添加本人账号、查看签到任务和最近记录，并按账号开启或关闭自动签到。
+
+## 构建
+
+需要 JDK 17 与 Android SDK 35：
+
+```bash
+cd mobile
+./gradlew :app:assembleDebug
+```
+
+正式包的 API 地址由 `mobile/app/build.gradle.kts` 中的 `API_BASE_URL` 指定。发布签名只从本机环境变量读取，密钥文件和密码不得进入仓库。
+
+## 数据边界
+
+- 学校会话 Cookie 经 HTTPS 发送到服务端并加密保存在 Android 本地令牌存储中；界面和日志不回显 Cookie。
+- 普通 App 用户只能访问自己添加的校园账号。
+- App 自动识别签到所需的 Android 设备资料。
+- App 不读取或上传设备位置；服务端必须按部署方的真实位置证明规则独立验证位置。
+- 公告在用户打开或刷新 App 时同步；反馈与当前 App 用户实名关联。
+
+请仅对本人账号、在学校规则和适用法律允许的范围内使用。生产提交默认关闭，部署者应在完成授权和真实位置验证后再显式启用。

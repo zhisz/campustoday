@@ -16,7 +16,7 @@ from .db import connect, get_setting, log_event, migrate, now_iso, set_settings
 from .location import verify_location
 from .mobile_api import load_releases, mobile_api
 from .scheduler import start_scheduler, status as scheduler_status
-from .templates import ACCOUNTS, APP_USERS, BASE, DASHBOARD, LOGIN, MOBILE_LANDING, SETTINGS, TABLE
+from .templates import ACCOUNTS, ANNOUNCEMENTS, APP_USERS, BASE, DASHBOARD, FEEDBACK_ADMIN, LOGIN, MOBILE_LANDING, SETTINGS, TABLE
 
 
 def create_app():
@@ -149,6 +149,59 @@ def create_app():
                 db.execute("UPDATE app_tokens SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now_iso(), user_id))
         flash("用户状态已更新")
         return redirect(url_for("app_users"))
+
+    @app.route("/announcements", methods=["GET", "POST"])
+    @protected
+    def announcements():
+        if request.method == "POST":
+            title = request.form.get("title", "").strip()
+            content = request.form.get("content", "").strip()
+            if not title or len(title) > 120 or not content or len(content) > 2000:
+                abort(400)
+            with connect() as db:
+                db.execute("INSERT INTO announcements(title,content,published,created_at) VALUES(?,?,1,?)", (title, content, now_iso()))
+            log_event("ANNOUNCEMENT_PUBLISHED", "Administrator published an announcement")
+            flash("公告已推送给所有 App 用户")
+            return redirect(url_for("announcements"))
+        with connect() as db:
+            rows = db.execute(
+                "SELECT a.*,COUNT(r.user_id) AS read_count FROM announcements a "
+                "LEFT JOIN announcement_reads r ON r.announcement_id=a.id GROUP BY a.id ORDER BY a.id DESC"
+            ).fetchall()
+            user_count = db.execute("SELECT COUNT(*) FROM app_users WHERE status='ACTIVE'").fetchone()[0]
+        return page("公告", ANNOUNCEMENTS, announcements=rows, user_count=user_count)
+
+    @app.post("/announcements/<int:announcement_id>/withdraw")
+    @protected
+    def announcement_withdraw(announcement_id):
+        with connect() as db:
+            changed = db.execute("UPDATE announcements SET published=0 WHERE id=?", (announcement_id,)).rowcount
+        if not changed:
+            abort(404)
+        flash("公告已撤回")
+        return redirect(url_for("announcements"))
+
+    @app.get("/feedback")
+    @protected
+    def feedback():
+        with connect() as db:
+            rows = db.execute(
+                "SELECT f.*,u.username FROM feedback f JOIN app_users u ON u.id=f.user_id ORDER BY f.id DESC LIMIT 200"
+            ).fetchall()
+        return page("反馈", FEEDBACK_ADMIN, feedback=rows)
+
+    @app.post("/feedback/<int:feedback_id>/status")
+    @protected
+    def feedback_status(feedback_id):
+        status = request.form.get("status")
+        if status not in {"OPEN", "RESOLVED"}:
+            abort(400)
+        with connect() as db:
+            changed = db.execute("UPDATE feedback SET status=?,updated_at=? WHERE id=?", (status, now_iso(), feedback_id)).rowcount
+        if not changed:
+            abort(404)
+        flash("反馈状态已更新")
+        return redirect(url_for("feedback"))
 
     @app.post("/accounts")
     @protected

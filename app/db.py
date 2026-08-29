@@ -154,6 +154,32 @@ def migrate():
             db.execute("ALTER TABLE campus_accounts ADD COLUMN owner_user_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE")
         db.execute("CREATE INDEX IF NOT EXISTS idx_campus_accounts_owner ON campus_accounts(owner_user_id)")
         db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, CURRENT_TIMESTAMP)")
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS announcements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          published INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS announcement_reads (
+          announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+          user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+          read_at TEXT NOT NULL,
+          PRIMARY KEY(announcement_id,user_id)
+        );
+        CREATE TABLE IF NOT EXISTS feedback (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+          category TEXT NOT NULL,
+          content TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'OPEN',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback(user_id);
+        """)
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (8, CURRENT_TIMESTAMP)")
 
 
 def log_event(event: str, message: str, level: str = "INFO", metadata=None):

@@ -146,6 +146,26 @@ class AppTest(unittest.TestCase):
         self.assertTrue(version.json["download_url"].endswith("/download/campustoday-1.0.0.apk"))
         self.assertEqual(self.client.get("/download/campustoday-1.0.0.apk").data, b"test-apk")
         self.assertIn("下载最新版 APK", self.client.get("/app").get_data(as_text=True))
+        self.assertIn("https://github.com/zhisz/campustoday", self.client.get("/app").get_data(as_text=True))
+
+    def test_announcements_and_nonanonymous_feedback(self):
+        registered = self.client.post("/api/v1/auth/register", json={"username": "feedback_user", "password": "strong-pass-123"})
+        headers = {"Authorization": f"Bearer {registered.json['token']}"}
+        self.login()
+        with self.client.session_transaction() as current_session:
+            csrf = current_session["csrf"]
+        published = self.client.post("/announcements", data={"csrf": csrf, "title": "维护通知", "content": "今晚服务更新"})
+        self.assertEqual(published.status_code, 302)
+        notices = self.client.get("/api/v1/announcements", headers=headers).json["announcements"]
+        self.assertEqual(notices[0]["title"], "维护通知")
+        self.assertFalse(notices[0]["is_read"])
+        self.assertEqual(self.client.post(f"/api/v1/announcements/{notices[0]['id']}/read", headers=headers).status_code, 200)
+        self.assertTrue(self.client.get("/api/v1/announcements", headers=headers).json["announcements"][0]["is_read"])
+        response = self.client.post("/api/v1/feedback", json={"category": "界面建议", "content": "希望按钮更明显"}, headers=headers)
+        self.assertEqual(response.status_code, 201)
+        page = self.client.get("/feedback").get_data(as_text=True)
+        self.assertIn("feedback_user", page)
+        self.assertIn("希望按钮更明显", page)
 
     def test_mobile_user_claims_matching_legacy_account_without_duplicate(self):
         from app.campus_accounts import check_session, create_account

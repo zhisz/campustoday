@@ -262,3 +262,39 @@ def app_version():
     latest = dict(releases[0])
     latest["download_url"] = request.url_root.rstrip("/") + "/download/" + latest["filename"]
     return jsonify(latest)
+
+
+@mobile_api.get("/announcements")
+@app_login_required
+def announcements_list():
+    with connect() as db:
+        rows = db.execute(
+            "SELECT a.id,a.title,a.content,a.created_at,CASE WHEN r.user_id IS NULL THEN 0 ELSE 1 END AS is_read "
+            "FROM announcements a LEFT JOIN announcement_reads r ON r.announcement_id=a.id AND r.user_id=? "
+            "WHERE a.published=1 ORDER BY a.id DESC LIMIT 20", (g.app_user["id"],)
+        ).fetchall()
+    return jsonify(announcements=[dict(row) for row in rows])
+
+
+@mobile_api.post("/announcements/<int:announcement_id>/read")
+@app_login_required
+def announcement_read(announcement_id):
+    with connect() as db:
+        if not db.execute("SELECT 1 FROM announcements WHERE id=? AND published=1", (announcement_id,)).fetchone():
+            return _json_error("公告不存在", 404)
+        db.execute("INSERT OR IGNORE INTO announcement_reads(announcement_id,user_id,read_at) VALUES(?,?,?)", (announcement_id, g.app_user["id"], now_iso()))
+    return jsonify(ok=True)
+
+
+@mobile_api.post("/feedback")
+@app_login_required
+def feedback_create():
+    data = request.get_json(silent=True) or {}
+    category = str(data.get("category") or "使用建议").strip()[:40]
+    content = str(data.get("content") or "").strip()
+    if not content or len(content) > 2000:
+        return _json_error("反馈内容需为 1–2000 个字符")
+    at = now_iso()
+    with connect() as db:
+        cursor = db.execute("INSERT INTO feedback(user_id,category,content,created_at,updated_at) VALUES(?,?,?,?,?)", (g.app_user["id"], category, content, at, at))
+    return jsonify(id=cursor.lastrowid, ok=True), 201

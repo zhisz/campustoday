@@ -7,6 +7,7 @@ import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -29,6 +30,7 @@ import org.json.JSONObject
 import java.util.concurrent.Executors
 
 private const val PORTAL_URL = "https://fdm.jxust.edu.cn/portal/index.html"
+private const val SOURCE_URL = "https://github.com/zhisz/campustoday"
 
 data class CampusAccount(
     val id: Int, val name: String, val verified: Boolean, val autoEnabled: Boolean,
@@ -47,6 +49,8 @@ class AppController(private val activity: ComponentActivity) {
     var busy by mutableStateOf(false)
     var message by mutableStateOf<String?>(null)
     var update by mutableStateOf<JSONObject?>(null)
+    var announcements by mutableStateOf<List<JSONObject>>(emptyList())
+    var activeAnnouncement by mutableStateOf<JSONObject?>(null)
 
     init { if (authenticated) loadAccounts() }
 
@@ -69,6 +73,9 @@ class AppController(private val activity: ComponentActivity) {
     fun loadAccounts() = run {
         val result = api.get("/api/v1/accounts")
         accounts = parseAccounts(result.getJSONArray("accounts"))
+        val noticeResult = api.get("/api/v1/announcements")
+        announcements = jsonObjects(noticeResult.getJSONArray("announcements"))
+        if (activeAnnouncement == null) activeAnnouncement = announcements.firstOrNull { !it.optBoolean("is_read") }
     }
 
     fun addCampusAccount(cookie: String, onDone: () -> Unit) = run {
@@ -78,7 +85,7 @@ class AppController(private val activity: ComponentActivity) {
         accounts = accounts + account
         selected = account
         message = if (account.verified) "已识别账号：${account.name}" else "账号已添加，但当前会话无效"
-        onDone()
+        activity.runOnUiThread(onDone)
         loadDetail(account.id)
     }
 
@@ -116,6 +123,26 @@ class AppController(private val activity: ComponentActivity) {
         else if (showLatest) message = "当前已是最新版本"
     }
 
+    fun showAnnouncements() {
+        activeAnnouncement = announcements.firstOrNull()
+        if (activeAnnouncement == null) message = "暂时没有公告"
+    }
+
+    fun markAnnouncementRead() {
+        val item = activeAnnouncement ?: return
+        activeAnnouncement = null
+        announcements = announcements.map { if (it.optInt("id") == item.optInt("id")) JSONObject(it.toString()).put("is_read", true) else it }
+        run { api.post("/api/v1/announcements/${item.getInt("id")}/read") }
+    }
+
+    fun sendFeedback(category: String, content: String, onDone: () -> Unit) = run {
+        api.post("/api/v1/feedback", JSONObject().put("category", category).put("content", content.trim()))
+        message = "反馈已实名提交，感谢你的建议"
+        activity.runOnUiThread(onDone)
+    }
+
+    fun openSource() { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(SOURCE_URL))) }
+
     fun openUpdate() {
         update?.optString("download_url")?.takeIf { it.startsWith("https://") }?.let {
             activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)))
@@ -136,6 +163,7 @@ class AppController(private val activity: ComponentActivity) {
     }
 
     private fun parseAccounts(array: JSONArray) = (0 until array.length()).map { parseAccount(array.getJSONObject(it)) }
+    private fun jsonObjects(array: JSONArray) = (0 until array.length()).map { array.getJSONObject(it) }
     private fun parseAccount(value: JSONObject): CampusAccount {
         val device = value.optJSONObject("device") ?: JSONObject()
         return CampusAccount(value.getInt("id"), value.optString("name", "未命名账号"), value.optBoolean("identity_verified"),
@@ -161,19 +189,19 @@ fun CampusTheme(content: @Composable () -> Unit) {
 @Composable
 fun CampusApp(controller: AppController) {
     var screen by remember { mutableStateOf(if (controller.authenticated) "home" else "auth") }
+    var showFeedback by remember { mutableStateOf(false) }
     LaunchedEffect(controller.authenticated) { screen = if (controller.authenticated) "home" else "auth" }
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    BackHandler(enabled = screen == "detail" || screen == "school") { screen = "home" }
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
         when (screen) {
             "auth" -> AuthScreen(controller)
             "school" -> SchoolLoginScreen(controller) { screen = "home" }
             "detail" -> DetailScreen(controller, onBack = { screen = "home" })
-            else -> HomeScreen(controller, onAdd = { screen = "school" }, onAccount = {
+            else -> HomeScreen(controller, onAdd = { screen = "school" }, onFeedback = { showFeedback = true }, onAccount = {
                 controller.selected = it; controller.loadDetail(it.id); screen = "detail"
             })
         }
-        if (controller.busy) Box(Modifier.fillMaxSize().background(Color(0x55000000)), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = Color.White)
-        }
+        if (controller.busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
         controller.message?.let { msg -> Snackbar(Modifier.align(Alignment.BottomCenter).padding(18.dp), action = {
             TextButton(onClick = { controller.message = null }) { Text("知道了") }
         }) { Text(msg) } }
@@ -182,6 +210,11 @@ fun CampusApp(controller: AppController) {
             text = { Text(latest.optString("release_notes", "优化使用体验")) },
             confirmButton = { Button(onClick = { controller.openUpdate() }) { Text("前往下载") } },
             dismissButton = { TextButton(onClick = { controller.update = null }) { Text("稍后") } }) }
+        controller.activeAnnouncement?.let { item -> AlertDialog(onDismissRequest = { controller.markAnnouncementRead() },
+            title = { Text(item.optString("title", "公告")) },
+            text = { Column { Text(item.optString("content")); Spacer(Modifier.height(12.dp)); Text("发布于 ${item.optString("created_at")}", color = Color(0xFF7B8798), fontSize = 12.sp) } },
+            confirmButton = { Button(onClick = { controller.markAnnouncementRead() }) { Text("我知道了") } }) }
+        if (showFeedback) FeedbackDialog(controller) { showFeedback = false }
     }
 }
 
@@ -209,16 +242,21 @@ fun Header(title: String, subtitle: String, trailing: @Composable RowScope.() ->
 }
 
 @Composable
-fun HomeScreen(controller: AppController, onAdd: () -> Unit, onAccount: (CampusAccount) -> Unit) {
+fun HomeScreen(controller: AppController, onAdd: () -> Unit, onFeedback: () -> Unit, onAccount: (CampusAccount) -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(rememberScrollState())) {
         Spacer(Modifier.height(24.dp)); Header("我的账号", "只显示你添加的校园账号") { TextButton(onClick = { controller.logout() }) { Text("退出") } }
         Row(Modifier.fillMaxWidth().padding(vertical = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = onAdd, modifier = Modifier.weight(1f)) { Text("+添加校园账号") }
             OutlinedButton(onClick = { controller.loadAccounts() }) { Text("刷新") }
         }
+        Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(onClick = { controller.showAnnouncements() }, Modifier.weight(1f)) { Text("公告${controller.announcements.count { !it.optBoolean("is_read") }.takeIf { it > 0 }?.let { " ($it)" } ?: ""}") }
+            OutlinedButton(onClick = onFeedback, Modifier.weight(1f)) { Text("提交反馈") }
+        }
         if (controller.accounts.isEmpty()) EmptyCard("还没有账号", "点击上方按钮，在学校页面完成登录即可添加。")
         controller.accounts.forEach { account -> AccountCard(account, onClick = { onAccount(account) }, onToggle = { controller.toggle(account) }) }
         OutlinedButton(onClick = { controller.checkUpdate() }, Modifier.fillMaxWidth().padding(top = 12.dp)) { Text("检查 App 更新") }
+        TextButton(onClick = { controller.openSource() }, Modifier.fillMaxWidth()) { Text("查看开源项目") }
         Text("位置由服务器统一管理，本 App 不会读取或上传位置。", color = Color(0xFF7B8798), fontSize = 12.sp, modifier = Modifier.padding(vertical = 20.dp))
         DeveloperSignature()
     }
@@ -230,7 +268,11 @@ fun AccountCard(account: CampusAccount, onClick: () -> Unit, onToggle: () -> Uni
         Column(Modifier.padding(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(account.name, fontSize = 20.sp, fontWeight = FontWeight.Bold); Text(account.model, color = Color(0xFF758197), fontSize = 13.sp) }; StatusBadge(account.sessionStatus) }
             HorizontalDivider(Modifier.padding(vertical = 14.dp), color = Color(0xFFEDF0F5))
-            Row(verticalAlignment = Alignment.CenterVertically) { Text("自动签到", Modifier.weight(1f), fontWeight = FontWeight.Medium); Switch(account.autoEnabled, onCheckedChange = { onToggle() }) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = Color(0xFFE6F5EA), shape = RoundedCornerShape(50)) { Text(if (account.autoEnabled) "自动签到已开启" else "自动签到已关闭", color = Color(0xFF157A35), fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) }
+                Spacer(Modifier.weight(1f)); Switch(account.autoEnabled, onCheckedChange = { onToggle() })
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 13.dp), horizontalArrangement = Arrangement.End) { Text("查看签到任务与记录  →", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp) }
         }
     }
 }
@@ -273,31 +315,42 @@ fun SchoolLoginScreen(controller: AppController, onBack: () -> Unit) {
 fun DetailScreen(controller: AppController, onBack: () -> Unit) {
     val account = controller.selected ?: return
     val data = controller.details
-    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(rememberScrollState())) {
-        Spacer(Modifier.height(22.dp)); Header(account.name, "签到任务与记录") { TextButton(onClick = onBack) { Text("返回") } }
-        Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Spacer(Modifier.height(12.dp)); Header(account.name, "签到任务与最近 3 条记录") { TextButton(onClick = onBack) { Text("返回") } }
+        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = { controller.check(account) }, Modifier.weight(1f)) { Text("检测会话") }
             OutlinedButton(onClick = { controller.loadDetail(account.id) }) { Text("刷新") }
         }
-        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(18.dp)) {
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { Text("账号状态", Modifier.weight(1f), fontWeight = FontWeight.Bold); StatusBadge(account.sessionStatus) }
-            InfoRow("自动签到", if (account.autoEnabled) "已开启" else "已关闭"); InfoRow("自动成功", "${data?.optInt("automatic_successes", 0) ?: 0} 次"); InfoRow("本月已签", "${data?.optInt("signed_count", 0) ?: 0} 次")
-            Button(onClick = { controller.toggle(account) }, Modifier.fillMaxWidth().padding(top = 10.dp), colors = ButtonDefaults.buttonColors(containerColor = if (account.autoEnabled) Color(0xFFB42318) else MaterialTheme.colorScheme.primary)) { Text(if (account.autoEnabled) "关闭自动签到" else "开启自动签到") }
+            InfoRow("自动成功", "${data?.optInt("automatic_successes", 0) ?: 0} 次"); InfoRow("本月已签", "${data?.optInt("signed_count", 0) ?: 0} 次")
+            Button(onClick = { controller.toggle(account) }, Modifier.fillMaxWidth().padding(top = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = if (account.autoEnabled) Color(0xFF198754) else MaterialTheme.colorScheme.primary)) { Text(if (account.autoEnabled) "自动签到已开启" else "开启自动签到") }
         } }
-        SectionTitle("待签任务"); JsonItems(data?.optJSONArray("tasks"), emptyText = "当前没有待签任务", titleKey = "name", detail = { "${it.optString("state")}  ·  ${it.optString("start")} — ${it.optString("end")}" })
-        SectionTitle("最近签到记录"); JsonItems(data?.optJSONArray("history"), emptyText = "暂无签到记录", titleKey = "name", detail = { "${it.optString("date")}  ·  ${it.optString("status")}  ·  ${if (it.optBoolean("automatic")) "自动签到" else "学校记录"}" })
-        TextButton(onClick = { controller.delete(account, onBack) }, Modifier.align(Alignment.CenterHorizontally).padding(vertical = 12.dp)) { Text("删除这个账号", color = Color(0xFFB42318)) }
+        SectionTitle("待签任务"); JsonItems(data?.optJSONArray("tasks"), 1, emptyText = "当前没有待签任务", titleKey = "name", detail = { "${it.optString("state")}  ·  ${it.optString("start")} — ${it.optString("end")}" })
+        SectionTitle("最近签到记录"); JsonItems(data?.optJSONArray("history"), 3, emptyText = "暂无签到记录", titleKey = "name", detail = { "${it.optString("date")}  ·  ${it.optString("status")}  ·  ${if (it.optBoolean("automatic")) "自动签到" else "学校记录"}" })
+        TextButton(onClick = { controller.delete(account, onBack) }, Modifier.align(Alignment.CenterHorizontally)) { Text("删除这个账号", color = Color(0xFFB42318)) }
     }
 }
 
-@Composable fun InfoRow(label: String, value: String) { Row(Modifier.fillMaxWidth().padding(top = 14.dp)) { Text(label, Modifier.weight(1f), color = Color(0xFF758197)); Text(value, fontWeight = FontWeight.SemiBold) } }
-@Composable fun SectionTitle(text: String) { Text(text, fontSize = 19.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 24.dp, bottom = 10.dp)) }
+@Composable fun InfoRow(label: String, value: String) { Row(Modifier.fillMaxWidth().padding(top = 8.dp)) { Text(label, Modifier.weight(1f), color = Color(0xFF758197)); Text(value, fontWeight = FontWeight.SemiBold) } }
+@Composable fun SectionTitle(text: String) { Text(text, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp, bottom = 7.dp)) }
 
 @Composable
-fun JsonItems(items: JSONArray?, emptyText: String, titleKey: String, detail: (JSONObject) -> String) {
-    if (items == null || items.length() == 0) EmptyCard(emptyText, "") else (0 until items.length()).forEach { index ->
-        val item = items.getJSONObject(index); Card(Modifier.fillMaxWidth().padding(bottom = 9.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(16.dp)) { Text(item.optString(titleKey, "未命名"), fontWeight = FontWeight.Bold); Text(detail(item), color = Color(0xFF738096), fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp)) } }
+fun JsonItems(items: JSONArray?, limit: Int, emptyText: String, titleKey: String, detail: (JSONObject) -> String) {
+    if (items == null || items.length() == 0) EmptyCard(emptyText, "") else (0 until minOf(items.length(), limit)).forEach { index ->
+        val item = items.getJSONObject(index); Surface(Modifier.fillMaxWidth().padding(bottom = 5.dp), color = Color.White, shape = RoundedCornerShape(12.dp)) { Row(Modifier.padding(horizontal = 13.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) { Text(item.optString(titleKey, "未命名"), Modifier.weight(0.36f), fontWeight = FontWeight.Bold, maxLines = 1); Text(detail(item), Modifier.weight(0.64f), color = Color(0xFF738096), fontSize = 12.sp, maxLines = 2) } }
     }
+}
+
+@Composable
+fun FeedbackDialog(controller: AppController, onDismiss: () -> Unit) {
+    var category by remember { mutableStateOf("使用建议") }
+    var content by remember { mutableStateOf("") }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("提交实名反馈") }, text = { Column {
+        Text("反馈会附带你的 App 用户名，方便管理员跟进。", color = Color(0xFF6B778C), fontSize = 13.sp)
+        OutlinedTextField(category, { category = it.take(40) }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("分类") }, singleLine = true)
+        OutlinedTextField(content, { content = it.take(2000) }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("反馈内容") }, minLines = 4)
+    } }, confirmButton = { Button(onClick = { controller.sendFeedback(category, content, onDismiss) }, enabled = content.isNotBlank()) { Text("提交") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
 }
 
 @Composable fun EmptyCard(title: String, detail: String) { Surface(Modifier.fillMaxWidth(), color = Color(0xFFEFF3F8), shape = RoundedCornerShape(16.dp)) { Column(Modifier.padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(title, fontWeight = FontWeight.Bold); if (detail.isNotBlank()) Text(detail, color = Color(0xFF758197), fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp)) } } }
