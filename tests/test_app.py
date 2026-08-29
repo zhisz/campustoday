@@ -144,6 +144,8 @@ class AppTest(unittest.TestCase):
         version = self.client.get("/api/v1/app/version")
         self.assertEqual(version.status_code, 200)
         self.assertTrue(version.json["download_url"].endswith("/download/campustoday-1.0.0.apk"))
+        proxied = self.client.get("/api/v1/app/version", headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "campustoday.example"})
+        self.assertEqual(proxied.json["download_url"], "https://campustoday.example/download/campustoday-1.0.0.apk")
         self.assertEqual(self.client.get("/download/campustoday-1.0.0.apk").data, b"test-apk")
         self.assertIn("下载最新版 APK", self.client.get("/app").get_data(as_text=True))
         self.assertIn("https://github.com/zhisz/campustoday", self.client.get("/app").get_data(as_text=True))

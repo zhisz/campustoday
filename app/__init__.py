@@ -9,6 +9,7 @@ from functools import wraps
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template_string, request, send_from_directory, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .campus_accounts import check_session, create_account, delete_account, device_defaults, get_account, list_accounts, update_account
 from .dashboard import build_dashboard, invalidate_school_cache
@@ -24,6 +25,7 @@ def create_app():
     # created by the web process private to its operating-system user.
     os.umask(0o077)
     app = Flask(__name__)
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     app.secret_key = os.environ["APP_SECRET"]
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=True, MAX_CONTENT_LENGTH=32 * 1024)
     migrate()
