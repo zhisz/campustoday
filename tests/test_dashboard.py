@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
-from app.dashboard import _flatten_history
+from app.dashboard import _flatten_history, _school_data, invalidate_school_cache
 
 
 class DashboardHistoryTest(unittest.TestCase):
@@ -24,6 +25,19 @@ class DashboardHistoryTest(unittest.TestCase):
             set(),
         )
         self.assertEqual(records[0]["date"], "2026-08-28")
+
+    def test_school_dashboard_requests_are_cached_per_account(self):
+        account = {"id": 91, "session_cookie": "MOD_AUTH_CAS=test"}
+        client = MagicMock()
+        client.list_today.return_value = []
+        client.month_history.return_value = {"rows": []}
+        invalidate_school_cache(account["id"])
+        with patch("app.dashboard.create_client", return_value=client) as create:
+            _school_data(account, "2026-08")
+            _school_data(account, "2026-08")
+        create.assert_called_once_with(account["session_cookie"])
+        client.list_today.assert_called_once_with()
+        client.month_history.assert_called_once_with("2026-08")
 
 
 if __name__ == "__main__":

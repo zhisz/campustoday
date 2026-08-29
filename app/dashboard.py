@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -11,6 +13,9 @@ from .db import connect
 
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+SCHOOL_CACHE_SECONDS = 180
+_school_cache = {}
+_school_cache_lock = threading.Lock()
 HISTORY_GROUPS = (
     ("signedTasks", "已签到", "ok"),
     ("codeRcvdTasks", "已扫码", "ok"),
@@ -60,10 +65,10 @@ def build_dashboard(account_id=None):
     if selected:
         session_valid = False
         try:
-            client = create_client(selected["session_cookie"])
-            tasks = client.list_today()
+            school_data = _school_data(selected, result["history_month"])
+            tasks = school_data["tasks"]
             result["upcoming"] = [_task_view(task) for task in tasks if not task.completed]
-            history = client.month_history(result["history_month"])
+            history = school_data["history"]
             records, count = _flatten_history(history.get("rows", []), result["history_month"], automatic_task_ids)
             result["school_history"] = records
             result["school_signed_count"] = count
@@ -76,6 +81,30 @@ def build_dashboard(account_id=None):
             if account["selected"]:
                 account["session_valid"] = session_valid
     return result
+
+
+def invalidate_school_cache(account_id):
+    with _school_cache_lock:
+        _school_cache.pop(account_id, None)
+
+
+def _school_data(account, year_month):
+    key = account["id"]
+    with _school_cache_lock:
+        cached = _school_cache.get(key)
+        if cached and time.monotonic() - cached["stored_at"] < SCHOOL_CACHE_SECONDS:
+            if cached.get("error"):
+                raise RuntimeError(cached["error"])
+            return cached["data"]
+        try:
+            client = create_client(account["session_cookie"])
+            data = {"tasks": client.list_today(), "history": client.month_history(year_month)}
+            _school_cache[key] = {"stored_at": time.monotonic(), "data": data, "error": None}
+            return data
+        except Exception as exc:
+            error = str(exc)
+            _school_cache[key] = {"stored_at": time.monotonic(), "data": None, "error": error}
+            raise
 
 
 def _parse_datetime(value):

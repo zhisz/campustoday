@@ -11,7 +11,7 @@ from flask import Flask, abort, flash, jsonify, redirect, render_template_string
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .campus_accounts import check_session, create_account, delete_account, get_account, list_accounts, update_account
-from .dashboard import build_dashboard
+from .dashboard import build_dashboard, invalidate_school_cache
 from .db import connect, get_setting, log_event, migrate, now_iso, set_settings
 from .location import verify_location
 from .scheduler import start_scheduler, status as scheduler_status
@@ -140,6 +140,7 @@ def create_app():
             )
             if not changed:
                 abort(404)
+            invalidate_school_cache(account_id)
             flash("账号设置已保存；如果更换了 Cookie，请点击“检测会话”")
             log_event("CAMPUS_ACCOUNT_UPDATED", f"Campus account {account_id} updated")
         except ValueError as exc:
@@ -152,7 +153,10 @@ def create_app():
         if not get_account(account_id):
             abort(404)
         result = check_session(account_id)
-        flash(f"会话有效，当日返回 {result['task_count']} 个任务" if result["valid"] else f"会话检测失败：{result['error']}")
+        if result.get("cached"):
+            flash("检测过于频繁，已使用 60 秒内的最近结果")
+        else:
+            flash(f"会话有效，当日返回 {result['task_count']} 个任务" if result["valid"] else f"会话检测失败：{result['error']}")
         log_event("CAMPUS_SESSION_CHECKED", f"Campus account {account_id}: {'valid' if result['valid'] else 'invalid'}")
         if request.form.get("next") == "dashboard":
             return redirect(url_for("dashboard", account=account_id))
@@ -174,6 +178,7 @@ def create_app():
     def campus_account_delete(account_id):
         if not delete_account(account_id):
             abort(404)
+        invalidate_school_cache(account_id)
         log_event("CAMPUS_ACCOUNT_DELETED", f"Campus account {account_id} deleted")
         flash("签到账号已删除，历史执行记录仍保留")
         return redirect(url_for("campus_accounts"))

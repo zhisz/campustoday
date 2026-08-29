@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from campus.client import create_client
 
 from .db import connect, now_iso
@@ -71,20 +73,36 @@ def check_session(account_id):
     account = get_account(account_id, include_cookie=True)
     if not account:
         raise LookupError("签到账号不存在")
+    last_checked = _parse_timestamp(account.get("last_checked_at"))
+    if last_checked and (datetime.now(timezone.utc) - last_checked).total_seconds() < 60:
+        valid = account["session_status"] == "VALID"
+        return {"valid": valid, "cached": True, "error": account.get("last_error")}
     at = now_iso()
     try:
         tasks = create_client(account["session_cookie"]).list_today()
         status, error = "VALID", None
-        result = {"valid": True, "task_count": len(tasks)}
+        result = {"valid": True, "task_count": len(tasks), "cached": False}
     except Exception as exc:
         status, error = "INVALID", _safe_error(exc)
-        result = {"valid": False, "error": error}
+        result = {"valid": False, "error": error, "cached": False}
     with connect() as db:
         db.execute(
             "UPDATE campus_accounts SET session_status=?,last_checked_at=?,last_error=?,updated_at=? WHERE id=?",
             (status, at, error, at, account_id),
         )
     return result
+
+
+def _parse_timestamp(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def _validate(name, session_cookie):

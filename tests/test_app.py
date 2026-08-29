@@ -51,6 +51,8 @@ class AppTest(unittest.TestCase):
         from app.db import connect
         with connect() as db:
             account = db.execute("SELECT id,auto_enabled FROM campus_accounts").fetchone()
+        cooldown = self.client.post(f"/accounts/{account['id']}/check", data={"csrf": token}, follow_redirects=True)
+        self.assertIn("60 秒内的最近结果", cooldown.get_data(as_text=True))
         self.client.post(f"/accounts/{account['id']}/update", data={"csrf": token, "name": "新名称", "session_cookie": "", "auto_enabled": "false"})
         with connect() as db:
             updated = db.execute("SELECT name,auto_enabled,session_cookie FROM campus_accounts WHERE id=?", (account["id"],)).fetchone()
