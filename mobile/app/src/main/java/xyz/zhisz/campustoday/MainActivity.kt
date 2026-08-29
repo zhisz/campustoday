@@ -256,7 +256,7 @@ fun HomeScreen(controller: AppController, onAdd: () -> Unit, onFeedback: () -> U
         if (controller.accounts.isEmpty()) EmptyCard("还没有账号", "点击上方按钮，在学校页面完成登录即可添加。")
         controller.accounts.forEach { account -> AccountCard(account, onClick = { onAccount(account) }, onToggle = { controller.toggle(account) }) }
         OutlinedButton(onClick = { controller.checkUpdate() }, Modifier.fillMaxWidth().padding(top = 12.dp)) { Text("检查 App 更新") }
-        TextButton(onClick = { controller.openSource() }, Modifier.fillMaxWidth()) { Text("查看开源项目") }
+        TextButton(onClick = { controller.openSource() }, Modifier.fillMaxWidth()) { Text("Github开源地址") }
         Text("位置由服务器统一管理，本 App 不会读取或上传位置。", color = Color(0xFF7B8798), fontSize = 12.sp, modifier = Modifier.padding(vertical = 20.dp))
         DeveloperSignature()
     }
