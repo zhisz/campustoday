@@ -41,8 +41,12 @@ jobs:
           build
       - name: Package unsigned IPA
         run: |
+          APP="$RUNNER_TEMP/CampusTodayDevice/Build/Products/Release-iphoneos/CampusToday.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")" = "xyz.zhisz.campustoday"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = "1.0.0"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "1"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
-          cp -R "$RUNNER_TEMP/CampusTodayDevice/Build/Products/Release-iphoneos/CampusToday.app" "$RUNNER_TEMP/ipa/Payload/"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
           cd "$RUNNER_TEMP/ipa"
           ditto -c -k --sequesterRsrc --keepParent Payload campustoday-ios-1.0.0-unsigned.ipa
       - uses: actions/upload-artifact@v4
