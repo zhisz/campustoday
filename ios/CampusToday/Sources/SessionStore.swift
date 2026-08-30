@@ -148,7 +148,7 @@ final class SessionStore: ObservableObject {
         await perform {
             let response: AccountResponse = try await self.api.request("POST", "/api/v1/accounts/\(account.id)/check")
             self.replace(response.account)
-            self.message = response.account.sessionStatus == "VALID" ? "会话有效：\(response.account.name)" : "会话已失效，请重新登录学校门户"
+            self.message = response.account.sessionStatus == "VALID" ? "已刷新云端状态：\(response.account.name)" : "云端记录显示会话需要更新"
             await self.loadDetail(account.id, showBusy: false)
         }
     }

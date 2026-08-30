@@ -1,16 +1,20 @@
+import os
+import tempfile
 import unittest
-import threading
-from unittest.mock import MagicMock, patch
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
-from app.dashboard import (
-    _flatten_history,
-    _school_data,
-    _wait_for_school_refresh,
-    invalidate_school_cache,
-)
+from app.dashboard import _flatten_history, build_dashboard
+from app.db import connect, migrate, now_iso
+from app.task_store import upsert_account_tasks
+from campus.attendance import AttendanceTask
 
 
-class DashboardHistoryTest(unittest.TestCase):
+LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+
+
+class DashboardHistoryFormattingTest(unittest.TestCase):
     def test_school_history_marks_only_matching_local_success_as_automatic(self):
         rows = [{
             "dayInMonth": 29,
@@ -20,6 +24,7 @@ class DashboardHistoryTest(unittest.TestCase):
             ],
         }]
         records, count = _flatten_history(rows, "2026-08", {"auto-task"})
+
         self.assertEqual(count, 2)
         self.assertTrue(records[0]["automatic"])
         self.assertFalse(records[1]["automatic"])
@@ -30,52 +35,153 @@ class DashboardHistoryTest(unittest.TestCase):
             "2026-08",
             set(),
         )
+
         self.assertEqual(records[0]["date"], "2026-08-28")
 
-    def test_school_dashboard_requests_are_cached_per_account(self):
-        account = {"id": 91, "session_cookie": "MOD_AUTH_CAS=test"}
-        client = MagicMock()
-        client.list_today.return_value = []
-        client.month_history.return_value = {"rows": []}
-        invalidate_school_cache(account["id"])
-        with patch("app.dashboard.create_client", return_value=client) as create:
-            with self.assertRaisesRegex(RuntimeError, "后台刷新"):
-                _school_data(account, "2026-08")
-            _wait_for_school_refresh(account["id"])
-            _school_data(account, "2026-08")
-        create.assert_called_once_with(account["session_cookie"], purpose="background")
-        client.list_today.assert_called_once_with()
-        client.month_history.assert_called_once_with("2026-08")
 
-    def test_invalidating_a_queued_refresh_does_not_deadlock(self):
-        gate = threading.Event()
-        started = threading.Event()
+class DatabaseBackedDashboardTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = patch.dict(
+            os.environ,
+            {
+                "DATABASE_PATH": os.path.join(self.tmp.name, "dashboard.db"),
+                "TZ": "Asia/Shanghai",
+                "CPDAILY_BASE_URL": "https://fdm.jxust.edu.cn",
+            },
+            clear=False,
+        )
+        self.env.start()
+        migrate()
+        self.first_account = self._insert_account("一号账号", "student-1")
+        self.second_account = self._insert_account("二号账号", "student-2")
 
-        def blocked_fetch(account, year_month):
-            if account["id"] == 201:
-                started.set()
-                gate.wait(timeout=2)
-            return {"tasks": [], "history": {"rows": []}}
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
 
-        accounts = [
-            {"id": account_id, "session_cookie": f"MOD_AUTH_CAS={account_id}"}
-            for account_id in (201, 202)
+    def _insert_account(self, name, campus_user_id):
+        at = now_iso()
+        with connect() as db:
+            return db.execute(
+                "INSERT INTO campus_accounts("
+                "name,session_cookie,auto_enabled,session_status,real_name,campus_user_id,"
+                "identity_verified_at,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?)",
+                (name, f"MOD_AUTH_CAS={campus_user_id}", 1, "VALID", name,
+                 campus_user_id, at, at, at),
+            ).lastrowid
+
+    @staticmethod
+    def _school_time(value):
+        return value.astimezone(LOCAL_TZ).isoformat(timespec="seconds")
+
+    def test_build_dashboard_reads_persisted_tasks_without_school_access(self):
+        now = datetime.now(LOCAL_TZ)
+        tasks = [
+            AttendanceTask(
+                "pending-task",
+                "pending-sign",
+                "待签任务",
+                self._school_time(now + timedelta(minutes=10)),
+                self._school_time(now + timedelta(minutes=40)),
+                False,
+                True,
+                "unSignedTasks",
+            ),
+            AttendanceTask(
+                "signed-task",
+                "signed-sign",
+                "已签任务",
+                self._school_time(now - timedelta(minutes=2)),
+                self._school_time(now),
+                True,
+                True,
+                "signedTasks",
+            ),
+            AttendanceTask(
+                "missed-task",
+                "missed-sign",
+                "漏签任务",
+                self._school_time(now - timedelta(minutes=4)),
+                self._school_time(now - timedelta(minutes=3)),
+                False,
+                True,
+                "unSignedTasks",
+            ),
         ]
-        for account in accounts:
-            invalidate_school_cache(account["id"])
-        with patch("app.dashboard._fetch_school_data", side_effect=blocked_fetch):
-            with self.assertRaisesRegex(RuntimeError, "后台刷新"):
-                _school_data(accounts[0], "2026-08")
-            self.assertTrue(started.wait(timeout=1))
-            with self.assertRaisesRegex(RuntimeError, "后台刷新"):
-                _school_data(accounts[1], "2026-08")
+        upsert_account_tasks(self.first_account, tasks)
+        upsert_account_tasks(
+            self.second_account,
+            [AttendanceTask(
+                "other-account-task",
+                "other-sign",
+                "其他账号任务",
+                self._school_time(now - timedelta(hours=1)),
+                self._school_time(now),
+                True,
+                True,
+                "signedTasks",
+            )],
+        )
+        at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with connect() as db:
+            db.execute(
+                "INSERT INTO checkins("
+                "date,task_id,task_name,start_time,end_time,submit_time,status,response_message,"
+                "created_at,updated_at,account_id,account_name"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (now.strftime("%Y-%m-%d"), "signed-task", "已签任务", tasks[1].start_time,
+                 tasks[1].end_time, at, "SUCCESS", "confirmed", at, at,
+                 self.first_account, "一号账号"),
+            )
 
-            invalidator = threading.Thread(target=invalidate_school_cache, args=(202,))
-            invalidator.start()
-            invalidator.join(timeout=1)
-            gate.set()
-            self.assertFalse(invalidator.is_alive(), "queued refresh cancellation deadlocked")
-            _wait_for_school_refresh(201)
+        with patch(
+            "app.dashboard.create_client",
+            side_effect=AssertionError("dashboard must not create a school client"),
+            create=True,
+        ) as create_client, patch(
+            "urllib.request.OpenerDirector.open",
+            side_effect=AssertionError("dashboard must not access the school network"),
+        ) as open_request:
+            dashboard = build_dashboard(self.first_account)
+
+        create_client.assert_not_called()
+        open_request.assert_not_called()
+        self.assertEqual(dashboard["selected_account"]["id"], self.first_account)
+        self.assertEqual([item["name"] for item in dashboard["upcoming"]], ["待签任务"])
+
+        history_by_name = {item["name"]: item for item in dashboard["school_history"]}
+        self.assertNotIn("待签任务", history_by_name)
+        self.assertNotIn("其他账号任务", history_by_name)
+        self.assertEqual(history_by_name["已签任务"]["status"], "已签到")
+        self.assertTrue(history_by_name["已签任务"]["automatic"])
+        self.assertEqual(history_by_name["漏签任务"]["status"], "未签到")
+        self.assertFalse(history_by_name["漏签任务"]["automatic"])
+        self.assertEqual(dashboard["school_signed_count"], 1)
+        self.assertIsNone(dashboard["school_error"])
+        self.assertNotIn(dashboard["cloud_updated_at"], (None, "尚未同步"))
+
+    def test_empty_cloud_snapshot_is_stable_and_does_not_access_school(self):
+        with patch(
+            "app.dashboard.create_client",
+            side_effect=AssertionError("empty cloud state must not create a school client"),
+            create=True,
+        ) as create_client, patch(
+            "urllib.request.OpenerDirector.open",
+            side_effect=AssertionError("empty cloud state must not trigger an upstream fill"),
+        ) as open_request:
+            first = build_dashboard(self.first_account)
+            second = build_dashboard(self.first_account)
+
+        create_client.assert_not_called()
+        open_request.assert_not_called()
+        self.assertEqual(first["upcoming"], [])
+        self.assertEqual(first["school_history"], [])
+        self.assertEqual(second["upcoming"], [])
+        self.assertEqual(second["school_history"], [])
+        self.assertEqual(first["cloud_updated_at"], "尚未同步")
+        self.assertIsNone(first["school_error"])
 
 
 if __name__ == "__main__":

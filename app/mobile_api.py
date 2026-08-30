@@ -257,17 +257,30 @@ def account_status(account_id):
     dashboard = build_dashboard(account_id)
     return jsonify(account=_account_summary(account), tasks=dashboard["upcoming"], history=dashboard["school_history"],
                    month=dashboard["history_month"], signed_count=dashboard["school_signed_count"],
-                   automatic_successes=dashboard["automatic_successes"], school_error=dashboard["school_error"])
+                   automatic_successes=dashboard["automatic_successes"], school_error=dashboard["school_error"],
+                   synced_at=dashboard["cloud_updated_at"])
 
 
 @mobile_api.post("/accounts/<int:account_id>/check")
 @app_login_required
 def account_check(account_id):
-    if not _owned_account(account_id):
+    account = _owned_account(account_id)
+    if not account:
         return _json_error("账号不存在", 404)
-    invalidate_school_cache(account_id)
-    result = check_session(account_id)
-    return jsonify(account=_account_summary(get_account(account_id)), check=result)
+    # Mobile refreshes are cloud-only. School access is owned by the rate-limited
+    # scheduler (apart from the explicit account-login/enrolment flow).
+    dashboard = build_dashboard(account_id)
+    result = {
+        "valid": account["session_status"] == "VALID",
+        "cached": True,
+        "cloud_only": True,
+        "real_name": account.get("real_name"),
+        "last_checked_at": account.get("last_checked_at"),
+        "error": account.get("last_error"),
+        "synced_at": dashboard["cloud_updated_at"],
+        "sync_error": dashboard["school_error"],
+    }
+    return jsonify(account=_account_summary(account), check=result)
 
 
 @mobile_api.patch("/accounts/<int:account_id>")

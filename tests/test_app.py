@@ -73,7 +73,7 @@ class AppTest(unittest.TestCase):
         with connect() as db:
             self.assertEqual(db.execute("SELECT auto_enabled FROM campus_accounts WHERE id=?", (account["id"],)).fetchone()[0], 1)
         dashboard = self.client.get(f"/dashboard?account={account['id']}").get_data(as_text=True)
-        self.assertIn("刷新并检测会话", dashboard)
+        self.assertIn("刷新云端状态", dashboard)
         self.assertIn("关闭自动签到", dashboard)
         self.assertIn("签到方式", dashboard)
         self.client.post(f"/accounts/{account['id']}/delete", data={"csrf": token})
@@ -182,6 +182,18 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/v1/accounts/{account_id}", headers=second).status_code, 404)
         toggled = self.client.patch(f"/api/v1/accounts/{account_id}", json={"auto_enabled": True}, headers=first)
         self.assertTrue(toggled.json["account"]["auto_enabled"])
+        from importlib import import_module
+        mobile_api_module = import_module("app.mobile_api")
+        with patch.object(mobile_api_module, "check_session", side_effect=AssertionError("mobile refresh must be cloud-only")) as check, \
+             patch("urllib.request.OpenerDirector.open", side_effect=AssertionError("mobile refresh must not access school")):
+            refreshed = self.client.post(f"/api/v1/accounts/{account_id}/check", headers=first)
+            detail = self.client.get(f"/api/v1/accounts/{account_id}", headers=first)
+        check.assert_not_called()
+        self.assertEqual(refreshed.status_code, 200)
+        self.assertTrue(refreshed.json["check"]["cloud_only"])
+        self.assertEqual(refreshed.json["check"]["synced_at"], "尚未同步")
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("synced_at", detail.json)
 
     def test_mobile_user_can_delete_account_and_associated_data(self):
         registered = self.client.post("/api/v1/auth/register", json={"username": "delete_user", "password": "strong-pass-123"})

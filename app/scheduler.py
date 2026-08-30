@@ -12,6 +12,12 @@ from .campus_accounts import account_device, get_account, list_accounts
 from .db import get_setting, log_event, now_iso, set_settings
 from .db import connect
 from .location import match_task_place, normalize_for_task, verify_location
+from .task_store import (
+    history_sync_due,
+    record_task_sync_error,
+    upsert_account_history,
+    upsert_account_tasks,
+)
 
 _lock = threading.Lock()
 _started = False
@@ -21,7 +27,7 @@ _scheduled_lock = threading.Lock()
 _submission_lock = threading.Lock()
 _upstream_lock = threading.Lock()
 _upstream_retry_after = 0
-UPSTREAM_RETRY_SECONDS = 60
+UPSTREAM_RETRY_SECONDS = 300
 
 
 def enabled() -> bool:
@@ -44,14 +50,26 @@ def poll():
     if not _upstream_ready():
         log_event("POLL_DEFERRED", "School API is in temporary backoff", "WARNING")
         return
-    accounts = _eligible_accounts()
+    accounts = _sync_accounts()
+    history_budget = True
+    history_month = datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).strftime("%Y-%m")
     for account in accounts:
         try:
-            client = create_client(account["session_cookie"], account_device(account), purpose="scheduler")
+            client = create_client(account["session_cookie"], purpose="scheduler")
             tasks = client.list_today()
+            upsert_account_tasks(account["id"], tasks)
+            _mark_account_poll_success(account["id"])
             _clear_upstream_backoff()
             log_event("POLL_OK", f"Account {account['name']}: {len(tasks)} task(s) returned")
-            if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
+            if history_budget and history_sync_due(account["id"], _history_sync_interval_minutes()):
+                # Monthly history is useful for the cloud timeline, but it is
+                # deliberately limited to one account per scheduler cycle.
+                history_budget = False
+                history = client.month_history(history_month)
+                history_count = upsert_account_history(account["id"], history, history_month)
+                _clear_upstream_backoff()
+                log_event("HISTORY_SYNC_OK", f"Account {account['name']}: {history_count} history record(s) cached")
+            if not account["auto_enabled"] or os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
                 continue
             for task in tasks:
                 attempt_status = _attempt_status(account["id"], task.task_id)
@@ -63,6 +81,8 @@ def poll():
                     continue
                 _schedule_task(account, task)
         except Exception as exc:
+            record_task_sync_error(account["id"], exc)
+            _mark_account_poll_failure(account["id"], exc)
             log_event("POLL_SKIPPED", f"Account {account['name']}: {exc}", "WARNING")
             if _temporary_upstream_failure(exc):
                 _defer_upstream()
@@ -99,7 +119,9 @@ def _run_scheduled_task(account_id, task_id):
             if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true" or _already_attempted(account_id, task_id):
                 return
             client = create_client(account["session_cookie"], account_device(account), purpose="submission")
-            task = next((item for item in client.list_today() if item.task_id == task_id and not item.completed), None)
+            current_tasks = client.list_today()
+            upsert_account_tasks(account_id, current_tasks)
+            task = next((item for item in current_tasks if item.task_id == task_id and not item.completed), None)
             if not task:
                 log_event("SCHEDULED_TASK_GONE", f"Account {account['name']}: task is no longer pending")
                 return
@@ -266,16 +288,48 @@ def _temporary_upstream_failure(exc):
     ))
 
 
+def _mark_account_poll_success(account_id):
+    at = now_iso()
+    with connect() as db:
+        db.execute(
+            "UPDATE campus_accounts SET session_status='VALID',last_checked_at=?,last_error=NULL,updated_at=? WHERE id=?",
+            (at, at, account_id),
+        )
+
+
+def _mark_account_poll_failure(account_id, exc):
+    text = str(exc).lower()
+    if not any(marker in text for marker in ("http 301", "http 302", "http 401", "http 403", "not logged in")):
+        return
+    at = now_iso()
+    with connect() as db:
+        db.execute(
+            "UPDATE campus_accounts SET session_status='INVALID',last_checked_at=?,last_error=?,updated_at=? WHERE id=?",
+            (at, "学校会话已失效，请重新登录", at, account_id),
+        )
+
+
 def _eligible_accounts():
+    return [account for account in _sync_accounts() if account["auto_enabled"]]
+
+
+def _sync_accounts():
     all_accounts = list_accounts(include_cookie=True)
-    accounts = [account for account in all_accounts if account["auto_enabled"]]
     identity_counts = Counter(str(account.get("campus_user_id") or "").strip() for account in all_accounts)
     return [
-        account for account in accounts
+        account for account in all_accounts
         if account.get("session_status") == "VALID"
         and str(account.get("campus_user_id") or "").strip()
         and identity_counts[str(account["campus_user_id"]).strip()] == 1
     ]
+
+
+def _history_sync_interval_minutes():
+    try:
+        value = int(os.getenv("HISTORY_SYNC_INTERVAL_MINUTES", "360"))
+    except ValueError:
+        value = 360
+    return max(30, min(value, 1440))
 
 
 def _identity_can_submit(account):

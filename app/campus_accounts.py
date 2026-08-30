@@ -93,6 +93,11 @@ def update_account(account_id, name, session_cookie, auto_enabled, device=None):
                 account_id,
             ),
         )
+        if cookie_changed:
+            # Cached school records belong to the old identity and must never be
+            # shown after a cookie is replaced.
+            db.execute("DELETE FROM account_task_records WHERE account_id=?", (account_id,))
+            db.execute("DELETE FROM account_task_sync_state WHERE account_id=?", (account_id,))
     return True
 
 

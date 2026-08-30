@@ -67,6 +67,8 @@ class JxustAttendanceClient(AttendanceClient):
             ("leaveTasks", True),
             ("registerLeaveTasks", True),
         )
+        if not any(group in datas for group, _completed in groups):
+            raise ProtocolError("Task list response contains no known task groups")
         for group, completed in groups:
             items = datas.get(group) or []
             if not isinstance(items, list):
@@ -88,6 +90,7 @@ class JxustAttendanceClient(AttendanceClient):
                         completed=completed,
                         requires_location=True,
                         status=str(item.get("signStatus") or group),
+                        source_group=group,
                     )
                 )
         return tasks

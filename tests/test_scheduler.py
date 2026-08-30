@@ -1,10 +1,17 @@
 import os
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 from zoneinfo import ZoneInfo
 
-from app.scheduler import _eligible_accounts, _process_task, _schedule_task, _scheduled_tasks, poll
+from app.scheduler import (
+    _eligible_accounts,
+    _process_task,
+    _schedule_task,
+    _scheduled_tasks,
+    _sync_accounts,
+    poll,
+)
 from campus.attendance import AttendanceTask
 from campus.jxust import UpstreamUnavailable
 
@@ -18,26 +25,91 @@ class MultiAccountSchedulerTest(unittest.TestCase):
         with patch("app.scheduler.list_accounts", return_value=accounts):
             self.assertEqual(_eligible_accounts(), [])
 
-    def test_poll_only_creates_clients_for_enabled_accounts(self):
+    def test_sync_account_selection_includes_disabled_unique_accounts(self):
+        accounts = [
+            {"id": 1, "auto_enabled": 1, "session_status": "VALID", "campus_user_id": "same"},
+            {"id": 2, "auto_enabled": 0, "session_status": "VALID", "campus_user_id": "same"},
+            {"id": 3, "auto_enabled": 1, "session_status": "INVALID", "campus_user_id": "invalid"},
+            {"id": 4, "auto_enabled": 0, "session_status": "VALID", "campus_user_id": "unique"},
+        ]
+        with patch("app.scheduler.list_accounts", return_value=accounts):
+            self.assertEqual([account["id"] for account in _sync_accounts()], [4])
+
+    def test_poll_syncs_valid_accounts_even_when_automation_is_disabled(self):
         accounts = [
             {"id": 1, "name": "enabled", "session_cookie": "a=1", "auto_enabled": 1, "session_status": "VALID", "campus_user_id": "student-1"},
             {"id": 2, "name": "disabled", "session_cookie": "b=2", "auto_enabled": 0, "session_status": "VALID", "campus_user_id": "student-2"},
         ]
-        client = MagicMock()
-        client.list_today.return_value = []
+        clients = [MagicMock(), MagicMock()]
+        for client in clients:
+            client.list_today.return_value = []
         with patch.dict(os.environ, {"CPDAILY_SUBMIT_ENABLED": "false"}), \
              patch("app.scheduler.set_settings"), \
              patch("app.scheduler.enabled", return_value=True), \
              patch("app.scheduler.monitoring_window", return_value=True), \
              patch("app.scheduler._upstream_ready", return_value=True), \
              patch("app.scheduler.list_accounts", return_value=accounts), \
-             patch("app.scheduler.account_device", return_value="device-profile") as device, \
-             patch("app.scheduler.create_client", return_value=client) as create, \
+             patch("app.scheduler.account_device") as device, \
+             patch("app.scheduler.create_client", side_effect=clients) as create, \
+             patch("app.scheduler.upsert_account_tasks") as upsert_tasks, \
+             patch("app.scheduler.upsert_account_history"), \
+             patch("app.scheduler.history_sync_due", return_value=False) as history_due, \
+             patch("app.scheduler.record_task_sync_error"), \
+             patch("app.scheduler._mark_account_poll_success") as mark_success, \
+             patch("app.scheduler._mark_account_poll_failure"), \
+             patch("app.scheduler._history_sync_interval_minutes", return_value=360), \
              patch("app.scheduler.log_event"):
             poll()
-        create.assert_called_once_with("a=1", "device-profile", purpose="scheduler")
-        device.assert_called_once_with(accounts[0])
-        client.list_today.assert_called_once_with()
+        self.assertEqual(create.call_args_list, [
+            call("a=1", purpose="scheduler"),
+            call("b=2", purpose="scheduler"),
+        ])
+        device.assert_not_called()
+        for client in clients:
+            client.list_today.assert_called_once_with()
+            client.month_history.assert_not_called()
+        self.assertEqual(upsert_tasks.call_args_list, [call(1, []), call(2, [])])
+        self.assertEqual(history_due.call_args_list, [call(1, 360), call(2, 360)])
+        self.assertEqual(mark_success.call_args_list, [call(1), call(2)])
+
+    def test_poll_syncs_month_history_for_at_most_one_due_account(self):
+        accounts = [
+            {"id": 1, "name": "first", "session_cookie": "a=1", "auto_enabled": 0, "session_status": "VALID", "campus_user_id": "student-1"},
+            {"id": 2, "name": "second", "session_cookie": "b=2", "auto_enabled": 0, "session_status": "VALID", "campus_user_id": "student-2"},
+            {"id": 3, "name": "third", "session_cookie": "c=3", "auto_enabled": 0, "session_status": "VALID", "campus_user_id": "student-3"},
+        ]
+        clients = [MagicMock(), MagicMock(), MagicMock()]
+        for client in clients:
+            client.list_today.return_value = []
+        history = {"rows": [{"dayInMonth": "30", "signedTasks": []}]}
+        clients[1].month_history.return_value = history
+        with patch.dict(os.environ, {"CPDAILY_SUBMIT_ENABLED": "false"}), \
+             patch("app.scheduler.set_settings"), \
+             patch("app.scheduler.enabled", return_value=True), \
+             patch("app.scheduler.monitoring_window", return_value=True), \
+             patch("app.scheduler._upstream_ready", return_value=True), \
+             patch("app.scheduler.list_accounts", return_value=accounts), \
+             patch("app.scheduler.account_device") as device, \
+             patch("app.scheduler.create_client", side_effect=clients), \
+             patch("app.scheduler.upsert_account_tasks") as upsert_tasks, \
+             patch("app.scheduler.upsert_account_history", return_value=0) as upsert_history, \
+             patch("app.scheduler.history_sync_due", side_effect=[False, True]) as history_due, \
+             patch("app.scheduler.record_task_sync_error"), \
+             patch("app.scheduler._mark_account_poll_success") as mark_success, \
+             patch("app.scheduler._mark_account_poll_failure"), \
+             patch("app.scheduler._history_sync_interval_minutes", return_value=360), \
+             patch("app.scheduler.log_event"):
+            poll()
+        device.assert_not_called()
+        self.assertEqual(upsert_tasks.call_args_list, [call(1, []), call(2, []), call(3, [])])
+        self.assertEqual(mark_success.call_args_list, [call(1), call(2), call(3)])
+        self.assertEqual(history_due.call_args_list, [call(1, 360), call(2, 360)])
+        clients[0].month_history.assert_not_called()
+        clients[1].month_history.assert_called_once()
+        history_month = clients[1].month_history.call_args.args[0]
+        self.assertRegex(history_month, r"^\d{4}-\d{2}$")
+        clients[2].month_history.assert_not_called()
+        upsert_history.assert_called_once_with(2, history, history_month)
 
     def test_poll_stops_after_the_first_transport_failure(self):
         accounts = [
@@ -46,17 +118,31 @@ class MultiAccountSchedulerTest(unittest.TestCase):
         ]
         client = MagicMock()
         client.list_today.side_effect = RuntimeError("Attendance API request failed")
+        error = client.list_today.side_effect
         with patch("app.scheduler.set_settings"), \
              patch("app.scheduler.enabled", return_value=True), \
              patch("app.scheduler.monitoring_window", return_value=True), \
              patch("app.scheduler._upstream_ready", return_value=True), \
              patch("app.scheduler._defer_upstream") as defer, \
              patch("app.scheduler.list_accounts", return_value=accounts), \
-             patch("app.scheduler.account_device", return_value="device-profile"), \
+             patch("app.scheduler.account_device") as device, \
              patch("app.scheduler.create_client", return_value=client) as create, \
+             patch("app.scheduler.upsert_account_tasks") as upsert_tasks, \
+             patch("app.scheduler.upsert_account_history") as upsert_history, \
+             patch("app.scheduler.history_sync_due") as history_due, \
+             patch("app.scheduler.record_task_sync_error") as record_error, \
+             patch("app.scheduler._mark_account_poll_success") as mark_success, \
+             patch("app.scheduler._mark_account_poll_failure") as mark_failure, \
              patch("app.scheduler.log_event"):
             poll()
         self.assertEqual(create.call_count, 1)
+        device.assert_not_called()
+        upsert_tasks.assert_not_called()
+        upsert_history.assert_not_called()
+        history_due.assert_not_called()
+        mark_success.assert_not_called()
+        record_error.assert_called_once_with(1, error)
+        mark_failure.assert_called_once_with(1, error)
         defer.assert_called_once_with()
 
     def test_successful_submit_is_marked_pending_without_immediate_confirmation(self):

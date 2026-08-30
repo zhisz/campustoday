@@ -11,6 +11,7 @@ class AttendanceTask:
     completed: bool
     requires_location: bool
     status: str = ""
+    source_group: str = ""
 
 
 class AttendanceClient:

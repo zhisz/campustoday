@@ -15,8 +15,8 @@ android {
         applicationId = "xyz.zhisz.campustoday"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.2.1"
+        versionCode = 8
+        versionName = "1.2.2"
         buildConfigField("String", "API_BASE_URL", "\"https://campustoday.zhisz.xyz\"")
     }
 

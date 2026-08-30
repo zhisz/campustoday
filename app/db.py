@@ -217,6 +217,83 @@ def migrate():
         END;
         """)
         db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (10, CURRENT_TIMESTAMP)")
+        migration_11_applied = db.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=11"
+        ).fetchone()
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS account_task_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES campus_accounts(id) ON DELETE CASCADE,
+          task_id TEXT NOT NULL,
+          sign_wid TEXT NOT NULL DEFAULT '',
+          task_name TEXT NOT NULL DEFAULT '',
+          start_time TEXT,
+          end_time TEXT,
+          completed INTEGER NOT NULL DEFAULT 0,
+          active_today INTEGER NOT NULL DEFAULT 0,
+          school_status TEXT NOT NULL DEFAULT '',
+          source_group TEXT NOT NULL DEFAULT '',
+          record_date TEXT NOT NULL DEFAULT '',
+          publisher TEXT NOT NULL DEFAULT '',
+          signed_time TEXT,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          sort_at TEXT NOT NULL,
+          completed_at TEXT,
+          UNIQUE(account_id, task_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_account_task_records_recent
+          ON account_task_records(account_id, sort_at DESC, id DESC);
+        CREATE TABLE IF NOT EXISTS account_task_sync_state (
+          account_id INTEGER PRIMARY KEY REFERENCES campus_accounts(id) ON DELETE CASCADE,
+          synced_at TEXT,
+          history_synced_at TEXT,
+          task_count INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          updated_at TEXT NOT NULL
+        );
+        """)
+        task_record_columns = {row["name"] for row in db.execute("PRAGMA table_info(account_task_records)")}
+        for name, definition in (
+            ("source_group", "TEXT NOT NULL DEFAULT ''"),
+            ("record_date", "TEXT NOT NULL DEFAULT ''"),
+            ("publisher", "TEXT NOT NULL DEFAULT ''"),
+            ("signed_time", "TEXT"),
+        ):
+            if name not in task_record_columns:
+                db.execute(f"ALTER TABLE account_task_records ADD COLUMN {name} {definition}")
+        task_sync_columns = {row["name"] for row in db.execute("PRAGMA table_info(account_task_sync_state)")}
+        if "history_synced_at" not in task_sync_columns:
+            db.execute("ALTER TABLE account_task_sync_state ADD COLUMN history_synced_at TEXT")
+        if not migration_11_applied:
+            db.execute(
+                "INSERT OR IGNORE INTO account_task_records("
+                "account_id,task_id,task_name,start_time,end_time,completed,active_today,"
+                "school_status,source_group,record_date,publisher,signed_time,"
+                "first_seen_at,last_seen_at,sort_at,completed_at"
+                ") SELECT "
+                "c.account_id,c.task_id,COALESCE(c.task_name,''),c.start_time,c.end_time,"
+                "CASE WHEN c.status='SUCCESS' THEN 1 ELSE 0 END,0,"
+                "c.status,CASE WHEN c.status='SUCCESS' THEN 'localAutomatic' ELSE 'localAttempt' END,"
+                "COALESCE(c.date,''),'',CASE WHEN c.status='SUCCESS' THEN c.submit_time ELSE NULL END,"
+                "c.created_at,c.updated_at,"
+                "COALESCE(NULLIF(c.end_time,''),NULLIF(c.start_time,''),c.updated_at),"
+                "CASE WHEN c.status='SUCCESS' THEN COALESCE(c.submit_time,c.updated_at) ELSE NULL END "
+                "FROM checkins c JOIN ("
+                "SELECT account_id,task_id,COALESCE(MAX(CASE WHEN status='SUCCESS' THEN id END),MAX(id)) AS selected_id "
+                "FROM checkins WHERE account_id IS NOT NULL AND task_id IS NOT NULL GROUP BY account_id,task_id"
+                ") chosen ON chosen.selected_id=c.id JOIN campus_accounts a ON a.id=c.account_id"
+            )
+            account_ids = db.execute("SELECT DISTINCT account_id FROM account_task_records").fetchall()
+            for row in account_ids:
+                db.execute(
+                    "DELETE FROM account_task_records WHERE account_id=? AND id NOT IN ("
+                    "SELECT id FROM account_task_records WHERE account_id=? "
+                    "ORDER BY sort_at DESC,id DESC LIMIT 100)",
+                    (row["account_id"], row["account_id"]),
+                )
+            db.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (11, CURRENT_TIMESTAMP)")
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (12, CURRENT_TIMESTAMP)")
 
 
 def log_event(event: str, message: str, level: str = "INFO", metadata=None):

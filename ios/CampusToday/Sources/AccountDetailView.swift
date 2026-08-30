@@ -12,7 +12,7 @@ struct AccountDetailView: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                Button("检测会话") { if let account { Task { await store.checkSession(account) } } }
+                Button("刷新云端状态") { if let account { Task { await store.checkSession(account) } } }
                     .buttonStyle(.borderedProminent).controlSize(.large).frame(maxWidth: .infinity)
                 Button("刷新") { Task { await store.loadDetail(accountID) } }.buttonStyle(.bordered).controlSize(.large)
             }
@@ -34,7 +34,7 @@ struct AccountDetailView: View {
 
             SectionHeader("最近签到记录")
             ForEach(Array((detail?.history ?? []).prefix(3))) { item in
-                CompactRow(title: item.name, detail: "\(item.date) · \(item.status) · \(item.automatic ? "自动签到" : "学校记录")")
+                CompactRow(title: item.name, detail: "\(item.date) · \(item.status) · \(item.automatic ? "自动签到" : "云端记录")")
             }
             if detail?.history.isEmpty != false { CompactRow(title: "暂无签到记录", detail: "") }
             if let error = detail?.schoolError, !error.isEmpty { Text(error).font(.caption).foregroundStyle(.orange) }

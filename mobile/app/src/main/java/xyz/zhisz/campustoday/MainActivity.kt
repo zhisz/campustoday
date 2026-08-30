@@ -115,7 +115,7 @@ class AppController(private val activity: ComponentActivity) {
         val result = api.post("/api/v1/accounts/${account.id}/check")
         selected = parseAccount(result.getJSONObject("account"))
         accounts = accounts.map { if (it.id == account.id) selected!! else it }
-        message = if (selected!!.sessionStatus == "VALID") "会话有效：${selected!!.name}" else "会话已失效，请重新添加账号"
+        message = if (selected!!.sessionStatus == "VALID") "已刷新云端状态：${selected!!.name}" else "云端记录显示会话需要更新"
         loadDetail(account.id)
     }
 
@@ -391,7 +391,7 @@ fun DetailScreen(controller: AppController, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Spacer(Modifier.height(12.dp)); Header(account.name, "签到任务与最近 3 条记录") { TextButton(onClick = onBack) { Text("返回") } }
         Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { controller.check(account) }, Modifier.weight(1f)) { Text("检测会话") }
+            Button(onClick = { controller.check(account) }, Modifier.weight(1f)) { Text("刷新云端状态") }
             OutlinedButton(onClick = { controller.loadDetail(account.id) }) { Text("刷新") }
         }
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) { Column(Modifier.padding(14.dp)) {
@@ -400,7 +400,7 @@ fun DetailScreen(controller: AppController, onBack: () -> Unit) {
             Button(onClick = { controller.toggle(account) }, Modifier.fillMaxWidth().padding(top = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = if (account.autoEnabled) Color(0xFF198754) else MaterialTheme.colorScheme.primary)) { Text(if (account.autoEnabled) "自动签到已开启" else "开启自动签到") }
         } }
         SectionTitle("待签任务"); JsonItems(data?.optJSONArray("tasks"), 1, emptyText = "当前没有待签任务", titleKey = "name", detail = { "${it.optString("state")}  ·  ${it.optString("start")} — ${it.optString("end")}" })
-        SectionTitle("最近签到记录"); JsonItems(data?.optJSONArray("history"), 3, emptyText = "暂无签到记录", titleKey = "name", detail = { "${it.optString("date")}  ·  ${it.optString("status")}  ·  ${if (it.optBoolean("automatic")) "自动签到" else "学校记录"}" })
+        SectionTitle("最近签到记录"); JsonItems(data?.optJSONArray("history"), 3, emptyText = "暂无签到记录", titleKey = "name", detail = { "${it.optString("date")}  ·  ${it.optString("status")}  ·  ${if (it.optBoolean("automatic")) "自动签到" else "云端记录"}" })
         TextButton(onClick = { controller.delete(account, onBack) }, Modifier.align(Alignment.CenterHorizontally)) { Text("删除这个账号", color = Color(0xFFB42318)) }
     }
 }

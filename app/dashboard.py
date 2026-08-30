@@ -1,26 +1,14 @@
 import os
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from campus.client import create_client
 from .campus_accounts import list_accounts
-from .db import connect, get_setting
+from .db import connect
+from .task_store import list_account_tasks, task_sync_state
 
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
-SCHOOL_CACHE_SECONDS = 600
-SCHOOL_ERROR_RETRY_SECONDS = 300
-_school_cache = {}
-_school_cache_lock = threading.Lock()
-_school_refreshes = {}
-_school_generations = {}
-_school_retry_after = {}
-_school_global_retry_after = 0
-_school_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="school-cache")
 HISTORY_GROUPS = (
     ("signedTasks", "已签到", "ok"),
     ("codeRcvdTasks", "已扫码", "ok"),
@@ -40,14 +28,14 @@ def build_dashboard(account_id=None):
             "FROM locations ORDER BY id DESC LIMIT 1"
         ).fetchone()
         automatic_successes = 0
-        automatic_task_ids = set()
+        automatic_submits = {}
         if selected:
             automatic_successes = db.execute(
                 "SELECT COUNT(*) AS count FROM checkins WHERE account_id=? AND status='SUCCESS'", (selected["id"],)
             ).fetchone()["count"]
-            automatic_task_ids = {
-                row["task_id"] for row in db.execute(
-                    "SELECT task_id FROM checkins WHERE account_id=? AND status='SUCCESS' AND task_id IS NOT NULL",
+            automatic_submits = {
+                row["task_id"]: row["submit_time"] for row in db.execute(
+                    "SELECT task_id,submit_time FROM checkins WHERE account_id=? AND status='SUCCESS' AND task_id IS NOT NULL",
                     (selected["id"],),
                 ).fetchall()
             }
@@ -63,24 +51,29 @@ def build_dashboard(account_id=None):
         "accounts": [],
         "selected_account": None,
         "history_month": datetime.now(LOCAL_TZ).strftime("%Y-%m"),
+        "cloud_updated_at": None,
     }
 
     for account in account_rows:
         result["accounts"].append(_account_view(account))
     if selected:
-        session_valid = selected["session_status"] == "VALID"
-        try:
-            school_data = _school_data(selected, result["history_month"])
-            tasks = school_data["tasks"]
-            result["upcoming"] = [_task_view(task) for task in tasks if not task.completed]
-            history = school_data["history"]
-            records, count = _flatten_history(history.get("rows", []), result["history_month"], automatic_task_ids)
-            result["school_history"] = records
-            result["school_signed_count"] = count
-            session_valid = True
-        except Exception as exc:
-            result["school_error"] = str(exc)
-        selected_status = "VALID" if session_valid else selected["session_status"]
+        task_records = list_account_tasks(selected["id"])
+        pending = [record for record in task_records if _task_record_pending(record)]
+        pending.sort(key=lambda record: record.get("start_time") or record.get("last_seen_at") or "")
+        result["upcoming"] = [_cached_task_view(record) for record in pending]
+        result["school_history"] = [
+            _cached_history_view(record, automatic_submits.get(record["task_id"]))
+            for record in task_records
+            if _task_record_in_history(record)
+        ]
+        result["school_signed_count"] = sum(
+            1 for record in task_records
+            if _task_record_signed(record) and _record_date(record).startswith(result["history_month"])
+        )
+        sync_state = task_sync_state(selected["id"])
+        result["cloud_updated_at"] = _format_datetime(sync_state["synced_at"], "尚未同步")
+        result["school_error"] = sync_state["last_error"]
+        selected_status = selected["session_status"]
         result["selected_account"] = _account_view(selected, selected_status)
         for account in result["accounts"]:
             account["selected"] = account["id"] == selected["id"]
@@ -91,144 +84,9 @@ def build_dashboard(account_id=None):
 
 
 def invalidate_school_cache(account_id):
-    future = None
-    with _school_cache_lock:
-        _school_cache.pop(account_id, None)
-        _school_retry_after.pop(account_id, None)
-        _school_generations[account_id] = _school_generations.get(account_id, 0) + 1
-        refresh = _school_refreshes.get(account_id)
-        if refresh:
-            future = refresh["future"]
-    if future:
-        future.cancel()
-
-
-def _school_data(account, year_month):
-    key = account["id"]
-    now = time.monotonic()
-    monitoring = _monitoring_window()
-    future = None
-    with _school_cache_lock:
-        cached = _school_cache.get(key)
-        same_month = cached and cached.get("year_month") == year_month
-        if same_month and cached.get("data") is not None:
-            if now - cached["stored_at"] < SCHOOL_CACHE_SECONDS:
-                return cached["data"]
-        elif same_month and cached.get("error"):
-            if now - cached["stored_at"] < SCHOOL_ERROR_RETRY_SECONDS:
-                raise RuntimeError(cached["error"])
-
-        refresh = _school_refreshes.get(key)
-        # The refresh remains the single-flight owner until its callback removes
-        # it, including the brief future-done/callback-pending state.
-        refresh_matches = refresh and refresh["year_month"] == year_month
-        retry_allowed = (
-            not monitoring
-            and now >= _school_retry_after.get(key, 0)
-            and now >= _school_global_retry_after
-        )
-        if not refresh_matches and retry_allowed:
-            generation = _school_generations.get(key, 0)
-            future = _school_executor.submit(_fetch_school_data, dict(account), year_month)
-            _school_refreshes[key] = {
-                "future": future,
-                "year_month": year_month,
-                "generation": generation,
-            }
-
-        if same_month and cached.get("data") is not None:
-            return cached["data"]
-
-    if future is not None:
-        future.add_done_callback(
-            lambda completed, account_id=key, month=year_month: _finish_school_refresh(
-                account_id, month, completed
-            )
-        )
-    if monitoring:
-        raise RuntimeError("签到监测时段内已暂停页面的学校接口刷新")
-    raise RuntimeError("学校数据正在后台刷新，请稍后重试")
-
-
-def _monitoring_window():
-    if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
-        return False
-    current = datetime.now(LOCAL_TZ).strftime("%H:%M")
-    start = get_setting("monitor_start", os.getenv("MONITOR_START", "20:00"))
-    end = get_setting("monitor_end", os.getenv("MONITOR_END", "23:30"))
-    return start <= current <= end
-
-
-def _fetch_school_data(account, year_month):
-    with _school_cache_lock:
-        retry_after = _school_global_retry_after
-    if time.monotonic() < retry_after:
-        raise RuntimeError("学校接口暂时不可用，后台稍后自动重试")
-    client = create_client(account["session_cookie"], purpose="background")
-    return {"tasks": client.list_today(), "history": client.month_history(year_month)}
-
-
-def _finish_school_refresh(account_id, year_month, future):
-    global _school_global_retry_after
-    try:
-        data, error = future.result(), None
-    except Exception as exc:
-        data, error = None, str(exc)
-    now = time.monotonic()
-    with _school_cache_lock:
-        refresh = _school_refreshes.get(account_id)
-        if not refresh or refresh["future"] is not future:
-            return
-        _school_refreshes.pop(account_id, None)
-        if refresh["generation"] != _school_generations.get(account_id, 0):
-            return
-        if error:
-            previous = _school_cache.get(account_id)
-            if not previous or previous.get("year_month") != year_month or previous.get("data") is None:
-                _school_cache[account_id] = {
-                    "stored_at": now,
-                    "year_month": year_month,
-                    "data": None,
-                    "error": error,
-                }
-            _school_retry_after[account_id] = now + SCHOOL_ERROR_RETRY_SECONDS
-            if _is_temporary_school_error(error):
-                _school_global_retry_after = max(
-                    _school_global_retry_after, now + SCHOOL_ERROR_RETRY_SECONDS
-                )
-            return
-        _school_cache[account_id] = {
-            "stored_at": now,
-            "year_month": year_month,
-            "data": data,
-            "error": None,
-        }
-        _school_retry_after.pop(account_id, None)
-        _school_global_retry_after = 0
-
-
-def _is_temporary_school_error(error):
-    text = str(error or "").lower()
-    return any(marker in text for marker in (
-        "request failed", "timed out", "temporarily", "暂时不可用",
-        "http 429", "http 5",
-        "熔断", "限流", "过于频繁", "invalid json",
-    ))
-
-
-def _wait_for_school_refresh(account_id, timeout=2):
-    """Wait for an account refresh in tests and maintenance commands."""
-    with _school_cache_lock:
-        refresh = _school_refreshes.get(account_id)
-    if not refresh:
-        return
-    refresh["future"].result(timeout=timeout)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        with _school_cache_lock:
-            if _school_refreshes.get(account_id) is not refresh:
-                return
-        time.sleep(0.001)
+    # Kept as a compatibility hook for account-update routes. Dashboard and
+    # mobile reads are database-only and have no process-local school cache.
+    return None
 
 
 def _parse_datetime(value):
@@ -288,6 +146,100 @@ def _task_view(task):
         "state": state,
         "tone": tone,
     }
+
+
+def _task_record_pending(record):
+    if bool(record.get("completed")):
+        return False
+    now = datetime.now(LOCAL_TZ)
+    end = _parse_datetime(record.get("end_time"))
+    if end:
+        return end >= now
+    record_date = _record_date(record)
+    if record_date:
+        return record_date >= now.strftime("%Y-%m-%d")
+    last_seen = _parse_datetime(record.get("last_seen_at"))
+    return bool(last_seen and last_seen.date() == now.date())
+
+
+def _task_record_in_history(record):
+    if bool(record.get("completed")):
+        return True
+    end = _parse_datetime(record.get("end_time"))
+    return bool(end and end < datetime.now(LOCAL_TZ))
+
+
+def _task_record_signed(record):
+    if not bool(record.get("completed")):
+        return False
+    group = str(record.get("source_group") or record.get("school_status") or "")
+    return group in {"signedTasks", "codeRcvdTasks", "localAutomatic", "SUCCESS"}
+
+
+def _cached_task_view(record):
+    now = datetime.now(LOCAL_TZ)
+    start = _parse_datetime(record.get("start_time"))
+    end = _parse_datetime(record.get("end_time"))
+    if start and now < start:
+        state, tone = "未开始", "neutral"
+    elif end and now > end:
+        state, tone = "已截止", "warn"
+    else:
+        state, tone = "可签到", "ok"
+    return {
+        "id": record.get("task_id"),
+        "name": record.get("task_name") or "未命名任务",
+        "start": _format_datetime(record.get("start_time")),
+        "end": _format_datetime(record.get("end_time")),
+        "state": state,
+        "tone": tone,
+    }
+
+
+def _cached_history_view(record, automatic_submit=None):
+    group = str(record.get("source_group") or record.get("school_status") or "")
+    completed = bool(record.get("completed"))
+    if group == "codeRcvdTasks":
+        status, tone = "已扫码", "ok"
+    elif group == "registerLeaveTasks":
+        status, tone = "登记离校", "neutral"
+    elif group == "leaveTasks":
+        status, tone = "已请假", "neutral"
+    elif completed:
+        status, tone = "已签到", "ok"
+    else:
+        status, tone = "未签到", "warn"
+    signed_value = record.get("signed_time") or automatic_submit
+    signed = _parse_datetime(signed_value)
+    start = _parse_datetime(record.get("start_time"))
+    end = _parse_datetime(record.get("end_time"))
+    if signed:
+        display_time = signed.strftime("%H:%M:%S")
+    elif start and end:
+        display_time = f"{start:%H:%M}–{end:%H:%M}"
+    else:
+        display_time = "—"
+    return {
+        "id": record.get("task_id"),
+        "date": _record_date(record) or "—",
+        "name": record.get("task_name") or "未命名任务",
+        "status": status,
+        "tone": tone,
+        "time": display_time,
+        "publisher": record.get("publisher") or "—",
+        "automatic": automatic_submit is not None,
+    }
+
+
+def _record_date(record):
+    explicit = str(record.get("record_date") or "").strip()
+    if explicit:
+        return explicit[:10]
+    for key in ("signed_time", "end_time", "start_time", "completed_at", "last_seen_at"):
+        parsed = _parse_datetime(record.get(key))
+        if parsed:
+            return parsed.strftime("%Y-%m-%d")
+    return ""
 
 
 def _flatten_history(rows, year_month, automatic_task_ids):
