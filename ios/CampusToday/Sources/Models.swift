@@ -9,7 +9,7 @@ struct AuthResponse: Codable {
     enum CodingKeys: String, CodingKey { case token, user; case expiresAt = "expires_at" }
 }
 
-struct DeviceProfile: Codable {
+struct DeviceProfile: Codable, Equatable {
     let deviceId: String?
     let model: String?
     let systemName: String?
