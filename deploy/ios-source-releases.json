@@ -1,0 +1,11 @@
+[
+  {
+    "version_code": 1,
+    "version_name": "1.0.0",
+    "filename": "",
+    "download_url": "https://github.com/zhisz/campustoday/tree/main/ios",
+    "mandatory": true,
+    "distribution_status": "source",
+    "release_notes": "首个原生 iOS 客户端工程；完成 Apple 签名后发布安装版本。"
+  }
+]
