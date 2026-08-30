@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -15,6 +16,10 @@ _started = False
 _next_run = None
 _scheduled_tasks = {}
 _scheduled_lock = threading.Lock()
+_submission_lock = threading.Lock()
+_upstream_lock = threading.Lock()
+_upstream_retry_after = 0
+UPSTREAM_RETRY_SECONDS = 60
 
 
 def enabled() -> bool:
@@ -34,20 +39,32 @@ def poll():
         return
     if not monitoring_window():
         return
+    if not _upstream_ready():
+        log_event("POLL_DEFERRED", "School API is in temporary backoff", "WARNING")
+        return
     accounts = [account for account in list_accounts(include_cookie=True) if account["auto_enabled"]]
     for account in accounts:
         try:
             client = create_client(account["session_cookie"], account_device(account))
             tasks = client.list_today()
+            _clear_upstream_backoff()
             log_event("POLL_OK", f"Account {account['name']}: {len(tasks)} task(s) returned")
             if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
                 continue
             for task in tasks:
-                if task.completed or not is_attendance_task(task.name) or _already_attempted(account["id"], task.task_id):
+                attempt_status = _attempt_status(account["id"], task.task_id)
+                if attempt_status == "SUBMITTED_UNCONFIRMED":
+                    if task.completed:
+                        _mark_checkin_success(account["id"], task.task_id, "Submission confirmed on a later poll")
+                    continue
+                if task.completed or not is_attendance_task(task.name) or attempt_status:
                     continue
                 _schedule_task(account, task)
         except Exception as exc:
             log_event("POLL_SKIPPED", f"Account {account['name']}: {exc}", "WARNING")
+            if _temporary_upstream_failure(exc):
+                _defer_upstream()
+                break
 
 
 def _schedule_task(account, task):
@@ -69,23 +86,46 @@ def _schedule_task(account, task):
 
 def _run_scheduled_task(account_id, task_id):
     key = (account_id, task_id)
+    retry = False
     try:
-        account = get_account(account_id, include_cookie=True)
-        if not account or not account["auto_enabled"] or not enabled():
-            return
-        if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true" or _already_attempted(account_id, task_id):
-            return
-        client = create_client(account["session_cookie"], account_device(account))
-        task = next((item for item in client.list_today() if item.task_id == task_id and not item.completed), None)
-        if not task:
-            log_event("SCHEDULED_TASK_GONE", f"Account {account['name']}: task is no longer pending")
-            return
-        _process_task(client, account, task)
+        with _submission_lock:
+            if not _upstream_ready():
+                raise RuntimeError("School API is in temporary backoff")
+            account = get_account(account_id, include_cookie=True)
+            if not account or not account["auto_enabled"] or not enabled():
+                return
+            if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true" or _already_attempted(account_id, task_id):
+                return
+            client = create_client(account["session_cookie"], account_device(account))
+            task = next((item for item in client.list_today() if item.task_id == task_id and not item.completed), None)
+            if not task:
+                log_event("SCHEDULED_TASK_GONE", f"Account {account['name']}: task is no longer pending")
+                return
+            _clear_upstream_backoff()
+            _process_task(client, account, task)
     except Exception as exc:
         log_event("SCHEDULED_TASK_FAILED", f"Account {account_id}: {exc}", "WARNING")
+        retry = _temporary_upstream_failure(exc)
+        if retry:
+            _defer_upstream()
     finally:
         with _scheduled_lock:
             _scheduled_tasks.pop(key, None)
+    if retry and enabled() and monitoring_window():
+        _schedule_retry(account_id, task_id)
+
+
+def _schedule_retry(account_id, task_id):
+    key = (account_id, task_id)
+    run_at = datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))) + timedelta(seconds=UPSTREAM_RETRY_SECONDS)
+    with _scheduled_lock:
+        if key in _scheduled_tasks:
+            return
+        timer = threading.Timer(UPSTREAM_RETRY_SECONDS, _run_scheduled_task, args=(account_id, task_id))
+        timer.daemon = True
+        _scheduled_tasks[key] = {"timer": timer, "run_at": run_at}
+        timer.start()
+    log_event("TASK_RETRY_SCHEDULED", f"Account {account_id}: retry scheduled for {run_at.isoformat()}", "WARNING")
 
 
 def _process_task(client, account, task):
@@ -114,10 +154,15 @@ def _process_task(client, account, task):
         "address": str(place.get("address") or location["address"] or ""),
         "is_malposition": False,
     })
-    confirmed = all(item.task_id != task.task_id for item in client.list_today() if not item.completed)
-    status = "SUCCESS" if confirmed else "SUBMITTED_UNCONFIRMED"
-    _save_checkin(account, task, status, "Submission confirmed" if confirmed else "Submission sent; confirmation pending")
-    log_event("CHECKIN_SUCCESS" if confirmed else "CHECKIN_UNCONFIRMED", status, "INFO" if confirmed else "WARNING")
+    _save_checkin(account, task, "SUBMITTED_UNCONFIRMED", "Submission accepted; confirmation pending")
+    try:
+        confirmed = all(item.task_id != task.task_id for item in client.list_today() if not item.completed)
+    except Exception as exc:
+        log_event("CHECKIN_CONFIRMATION_DEFERRED", f"Account {account['id']}: {exc}", "WARNING")
+        return result
+    if confirmed:
+        _mark_checkin_success(account["id"], task.task_id, "Submission confirmed")
+    log_event("CHECKIN_SUCCESS" if confirmed else "CHECKIN_UNCONFIRMED", "SUCCESS" if confirmed else "SUBMITTED_UNCONFIRMED", "INFO" if confirmed else "WARNING")
     if confirmed:
         set_settings({"last_success": now_iso()})
     return result
@@ -150,12 +195,52 @@ def _latest_location():
 
 
 def _already_attempted(account_id, task_id):
+    return bool(_attempt_status(account_id, task_id))
+
+
+def _attempt_status(account_id, task_id):
     with connect() as db:
         row = db.execute(
-            "SELECT 1 FROM checkins WHERE account_id=? AND task_id=? AND status IN ('SUCCESS','SUBMITTED_UNCONFIRMED') LIMIT 1",
+            "SELECT status FROM checkins WHERE account_id=? AND task_id=? AND status IN ('SUCCESS','SUBMITTED_UNCONFIRMED') ORDER BY id DESC LIMIT 1",
             (account_id, task_id),
         ).fetchone()
-    return bool(row)
+    return row["status"] if row else None
+
+
+def _mark_checkin_success(account_id, task_id, message):
+    at = now_iso()
+    with connect() as db:
+        db.execute(
+            "UPDATE checkins SET status='SUCCESS',response_message=?,updated_at=? "
+            "WHERE account_id=? AND task_id=? AND status='SUBMITTED_UNCONFIRMED'",
+            (message, at, account_id, task_id),
+        )
+    set_settings({"last_success": at})
+
+
+def _temporary_upstream_failure(exc):
+    text = str(exc).lower()
+    return any(marker in text for marker in (
+        "request failed", "timed out", "temporary backoff", "temporarily",
+        "http 429", "http 5", "connection",
+    ))
+
+
+def _upstream_ready():
+    with _upstream_lock:
+        return time.monotonic() >= _upstream_retry_after
+
+
+def _defer_upstream():
+    global _upstream_retry_after
+    with _upstream_lock:
+        _upstream_retry_after = max(_upstream_retry_after, time.monotonic() + UPSTREAM_RETRY_SECONDS)
+
+
+def _clear_upstream_backoff():
+    global _upstream_retry_after
+    with _upstream_lock:
+        _upstream_retry_after = 0
 
 
 def _save_task(task, detail):

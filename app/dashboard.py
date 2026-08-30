@@ -13,13 +13,14 @@ from .db import connect
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 SCHOOL_CACHE_SECONDS = 180
-SCHOOL_ERROR_RETRY_SECONDS = 15
+SCHOOL_ERROR_RETRY_SECONDS = 60
 _school_cache = {}
 _school_cache_lock = threading.Lock()
 _school_refreshes = {}
 _school_generations = {}
 _school_retry_after = {}
-_school_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="school-cache")
+_school_global_retry_after = 0
+_school_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="school-cache")
 HISTORY_GROUPS = (
     ("signedTasks", "已签到", "ok"),
     ("codeRcvdTasks", "已扫码", "ok"),
@@ -118,7 +119,7 @@ def _school_data(account, year_month):
 
         refresh = _school_refreshes.get(key)
         refresh_matches = refresh and refresh["year_month"] == year_month and not refresh["future"].done()
-        retry_allowed = now >= _school_retry_after.get(key, 0)
+        retry_allowed = now >= _school_retry_after.get(key, 0) and now >= _school_global_retry_after
         if not refresh_matches and retry_allowed:
             generation = _school_generations.get(key, 0)
             future = _school_executor.submit(_fetch_school_data, dict(account), year_month)
@@ -141,11 +142,16 @@ def _school_data(account, year_month):
 
 
 def _fetch_school_data(account, year_month):
+    with _school_cache_lock:
+        retry_after = _school_global_retry_after
+    if time.monotonic() < retry_after:
+        raise RuntimeError("学校接口暂时不可用，后台稍后自动重试")
     client = create_client(account["session_cookie"])
     return {"tasks": client.list_today(), "history": client.month_history(year_month)}
 
 
 def _finish_school_refresh(account_id, year_month, future):
+    global _school_global_retry_after
     try:
         data, error = future.result(), None
     except Exception as exc:
@@ -168,6 +174,10 @@ def _finish_school_refresh(account_id, year_month, future):
                     "error": error,
                 }
             _school_retry_after[account_id] = now + SCHOOL_ERROR_RETRY_SECONDS
+            if _is_temporary_school_error(error):
+                _school_global_retry_after = max(
+                    _school_global_retry_after, now + SCHOOL_ERROR_RETRY_SECONDS
+                )
             return
         _school_cache[account_id] = {
             "stored_at": now,
@@ -176,6 +186,15 @@ def _finish_school_refresh(account_id, year_month, future):
             "error": None,
         }
         _school_retry_after.pop(account_id, None)
+        _school_global_retry_after = 0
+
+
+def _is_temporary_school_error(error):
+    text = str(error or "").lower()
+    return any(marker in text for marker in (
+        "request failed", "timed out", "temporarily", "暂时不可用",
+        "http 429", "http 5",
+    ))
 
 
 def _wait_for_school_refresh(account_id, timeout=2):
