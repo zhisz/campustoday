@@ -43,7 +43,7 @@ class DashboardHistoryTest(unittest.TestCase):
                 _school_data(account, "2026-08")
             _wait_for_school_refresh(account["id"])
             _school_data(account, "2026-08")
-        create.assert_called_once_with(account["session_cookie"])
+        create.assert_called_once_with(account["session_cookie"], purpose="background")
         client.list_today.assert_called_once_with()
         client.month_history.assert_called_once_with("2026-08")
 

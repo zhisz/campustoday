@@ -12,8 +12,8 @@ from .db import connect
 
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
-SCHOOL_CACHE_SECONDS = 180
-SCHOOL_ERROR_RETRY_SECONDS = 60
+SCHOOL_CACHE_SECONDS = 600
+SCHOOL_ERROR_RETRY_SECONDS = 300
 _school_cache = {}
 _school_cache_lock = threading.Lock()
 _school_refreshes = {}
@@ -96,7 +96,7 @@ def invalidate_school_cache(account_id):
         _school_cache.pop(account_id, None)
         _school_retry_after.pop(account_id, None)
         _school_generations[account_id] = _school_generations.get(account_id, 0) + 1
-        refresh = _school_refreshes.pop(account_id, None)
+        refresh = _school_refreshes.get(account_id)
         if refresh:
             future = refresh["future"]
     if future:
@@ -146,7 +146,7 @@ def _fetch_school_data(account, year_month):
         retry_after = _school_global_retry_after
     if time.monotonic() < retry_after:
         raise RuntimeError("学校接口暂时不可用，后台稍后自动重试")
-    client = create_client(account["session_cookie"])
+    client = create_client(account["session_cookie"], purpose="background")
     return {"tasks": client.list_today(), "history": client.month_history(year_month)}
 
 
@@ -194,6 +194,7 @@ def _is_temporary_school_error(error):
     return any(marker in text for marker in (
         "request failed", "timed out", "temporarily", "暂时不可用",
         "http 429", "http 5",
+        "熔断", "限流", "过于频繁", "invalid json",
     ))
 
 

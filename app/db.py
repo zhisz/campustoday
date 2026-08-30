@@ -186,6 +186,25 @@ def migrate():
                 db.execute(f"ALTER TABLE announcements ADD COLUMN {name} TEXT")
         db.execute("UPDATE announcements SET starts_at=created_at WHERE starts_at IS NULL OR starts_at='' ")
         db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (9, CURRENT_TIMESTAMP)")
+        # A trigger prevents future duplicate attempts without requiring legacy
+        # duplicate rows to be deleted during migration.  Some early releases
+        # could record the same task more than once, so a unique index would make
+        # an otherwise healthy production database fail to start.
+        db.execute("DROP INDEX IF EXISTS idx_checkins_account_task_once")
+        db.executescript("""
+        CREATE TRIGGER IF NOT EXISTS trg_checkins_account_task_once
+        BEFORE INSERT ON checkins
+        WHEN NEW.account_id IS NOT NULL
+          AND NEW.task_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM checkins
+            WHERE account_id=NEW.account_id AND task_id=NEW.task_id
+          )
+        BEGIN
+          SELECT RAISE(IGNORE);
+        END;
+        """)
+        db.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (10, CURRENT_TIMESTAMP)")
 
 
 def log_event(event: str, message: str, level: str = "INFO", metadata=None):

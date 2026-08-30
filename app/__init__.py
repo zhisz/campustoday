@@ -292,7 +292,7 @@ def create_app():
             abort(404)
         result = check_session(account_id)
         if result.get("cached"):
-            flash(f"检测过于频繁，已使用 60 秒内的最近结果：{result.get('real_name') or '未识别'}")
+            flash(f"检测过于频繁，已使用 10 分钟内的最近结果：{result.get('real_name') or '未识别'}")
         elif result.get("temporary"):
             flash(result["error"])
         else:

@@ -7,6 +7,7 @@ from .db import connect, now_iso
 
 
 MAX_ACCOUNTS = 20
+SESSION_CHECK_COOLDOWN_SECONDS = 600
 DEVICE_COLUMNS = "device_id,app_version,device_model,system_name,system_version"
 
 
@@ -98,7 +99,7 @@ def check_session(account_id):
     if not account:
         raise LookupError("签到账号不存在")
     last_checked = _parse_timestamp(account.get("last_checked_at"))
-    if last_checked and account.get("real_name") and (datetime.now(timezone.utc) - last_checked).total_seconds() < 60:
+    if last_checked and (datetime.now(timezone.utc) - last_checked).total_seconds() < SESSION_CHECK_COOLDOWN_SECONDS:
         valid = account["session_status"] == "VALID"
         return {"valid": valid, "cached": True, "error": account.get("last_error"), "real_name": account.get("real_name")}
     at = now_iso()
@@ -217,6 +218,8 @@ def _is_definitive_auth_failure(exc):
     text = str(exc).strip().lower()
     return any(marker in text for marker in (
         "portal session is not logged in",
+        "portal api returned http 301",
+        "portal api returned http 302",
         "portal api returned http 401",
         "portal api returned http 403",
         "认证信息无效或已失效",

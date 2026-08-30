@@ -62,7 +62,7 @@ class AppTest(unittest.TestCase):
             account = db.execute("SELECT id,name,real_name,campus_user_id,auto_enabled FROM campus_accounts").fetchone()
         self.assertEqual((account["name"], account["real_name"], account["campus_user_id"]), ("李尚智", "李尚智", "1247598866"))
         cooldown = self.client.post(f"/accounts/{account['id']}/check", data={"csrf": token}, follow_redirects=True)
-        self.assertIn("60 秒内的最近结果", cooldown.get_data(as_text=True))
+        self.assertIn("10 分钟内的最近结果", cooldown.get_data(as_text=True))
         self.client.post(f"/accounts/{account['id']}/update", data={"csrf": token, "name": "新名称", "session_cookie": "", "auto_enabled": "false", "device_id": "device-new", "device_model": "New Model", "system_name": "Android", "system_version": "17"})
         with connect() as db:
             updated = db.execute("SELECT name,auto_enabled,session_cookie,device_id,device_model,system_version FROM campus_accounts WHERE id=?", (account["id"],)).fetchone()

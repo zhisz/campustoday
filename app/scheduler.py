@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from campus.client import create_client
+from campus.jxust import UpstreamUnavailable
 from campus.task import is_attendance_task
 from .campus_accounts import account_device, get_account, list_accounts
 from .db import get_setting, log_event, now_iso, set_settings
@@ -45,7 +46,7 @@ def poll():
     accounts = [account for account in list_accounts(include_cookie=True) if account["auto_enabled"]]
     for account in accounts:
         try:
-            client = create_client(account["session_cookie"], account_device(account))
+            client = create_client(account["session_cookie"], account_device(account), purpose="scheduler")
             tasks = client.list_today()
             _clear_upstream_backoff()
             log_event("POLL_OK", f"Account {account['name']}: {len(tasks)} task(s) returned")
@@ -53,7 +54,7 @@ def poll():
                 continue
             for task in tasks:
                 attempt_status = _attempt_status(account["id"], task.task_id)
-                if attempt_status == "SUBMITTED_UNCONFIRMED":
+                if attempt_status in {"SUBMITTED_UNCONFIRMED", "SUBMIT_UNKNOWN", "ATTEMPT_STARTED"}:
                     if task.completed:
                         _mark_checkin_success(account["id"], task.task_id, "Submission confirmed on a later poll")
                     continue
@@ -92,11 +93,11 @@ def _run_scheduled_task(account_id, task_id):
             if not _upstream_ready():
                 raise RuntimeError("School API is in temporary backoff")
             account = get_account(account_id, include_cookie=True)
-            if not account or not account["auto_enabled"] or not enabled():
+            if not account or not account["auto_enabled"] or not enabled() or not monitoring_window():
                 return
             if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true" or _already_attempted(account_id, task_id):
                 return
-            client = create_client(account["session_cookie"], account_device(account))
+            client = create_client(account["session_cookie"], account_device(account), purpose="submission")
             task = next((item for item in client.list_today() if item.task_id == task_id and not item.completed), None)
             if not task:
                 log_event("SCHEDULED_TASK_GONE", f"Account {account['name']}: task is no longer pending")
@@ -147,24 +148,29 @@ def _process_task(client, account, task):
         log_event("OUTSIDE_TASK_GEOFENCE", "Fresh location is outside this task's allowed places", "WARNING")
         return
     _save_task(task, detail)
-    result = client.submit(task, {
-        "verified": True,
-        "latitude": latitude,
-        "longitude": longitude,
-        "address": str(place.get("address") or location["address"] or ""),
-        "is_malposition": False,
-    })
-    _save_checkin(account, task, "SUBMITTED_UNCONFIRMED", "Submission accepted; confirmation pending")
+    if not _save_checkin(account, task, "ATTEMPT_STARTED", "Submission attempt started"):
+        log_event("CHECKIN_DUPLICATE_PREVENTED", f"Account {account['id']}: task already attempted", "WARNING")
+        return
     try:
-        confirmed = all(item.task_id != task.task_id for item in client.list_today() if not item.completed)
+        result = client.submit(task, {
+            "verified": True,
+            "latitude": latitude,
+            "longitude": longitude,
+            "address": str(place.get("address") or location["address"] or ""),
+            "is_malposition": False,
+        })
+    except UpstreamUnavailable:
+        # The shared gate raises this before any HTTP request is sent.  Remove
+        # only this provisional row so the scheduler can safely retry later.
+        _delete_unsent_checkin_attempt(account["id"], task.task_id)
+        raise
     except Exception as exc:
-        log_event("CHECKIN_CONFIRMATION_DEFERRED", f"Account {account['id']}: {exc}", "WARNING")
-        return result
-    if confirmed:
-        _mark_checkin_success(account["id"], task.task_id, "Submission confirmed")
-    log_event("CHECKIN_SUCCESS" if confirmed else "CHECKIN_UNCONFIRMED", "SUCCESS" if confirmed else "SUBMITTED_UNCONFIRMED", "INFO" if confirmed else "WARNING")
-    if confirmed:
-        set_settings({"last_success": now_iso()})
+        # Once a request may have left the process, never submit the same task
+        # again automatically.  A later read-only poll can still confirm it.
+        _mark_checkin_unknown(account["id"], task.task_id, exc)
+        raise
+    _mark_checkin_submitted(account["id"], task.task_id)
+    log_event("CHECKIN_UNCONFIRMED", "SUBMITTED_UNCONFIRMED", "WARNING")
     return result
 
 
@@ -201,7 +207,7 @@ def _already_attempted(account_id, task_id):
 def _attempt_status(account_id, task_id):
     with connect() as db:
         row = db.execute(
-            "SELECT status FROM checkins WHERE account_id=? AND task_id=? AND status IN ('SUCCESS','SUBMITTED_UNCONFIRMED') ORDER BY id DESC LIMIT 1",
+            "SELECT status FROM checkins WHERE account_id=? AND task_id=? AND status IN ('SUCCESS','SUBMITTED_UNCONFIRMED','SUBMIT_UNKNOWN','ATTEMPT_STARTED') ORDER BY id DESC LIMIT 1",
             (account_id, task_id),
         ).fetchone()
     return row["status"] if row else None
@@ -212,17 +218,49 @@ def _mark_checkin_success(account_id, task_id, message):
     with connect() as db:
         db.execute(
             "UPDATE checkins SET status='SUCCESS',response_message=?,updated_at=? "
-            "WHERE account_id=? AND task_id=? AND status='SUBMITTED_UNCONFIRMED'",
+            "WHERE account_id=? AND task_id=? AND status IN ('SUBMITTED_UNCONFIRMED','SUBMIT_UNKNOWN','ATTEMPT_STARTED')",
             (message, at, account_id, task_id),
         )
     set_settings({"last_success": at})
 
 
+def _mark_checkin_submitted(account_id, task_id):
+    at = now_iso()
+    with connect() as db:
+        db.execute(
+            "UPDATE checkins SET status='SUBMITTED_UNCONFIRMED',response_message=?,updated_at=? "
+            "WHERE account_id=? AND task_id=? AND status='ATTEMPT_STARTED'",
+            ("Submission accepted; confirmation pending", at, account_id, task_id),
+        )
+
+
+def _delete_unsent_checkin_attempt(account_id, task_id):
+    with connect() as db:
+        db.execute(
+            "DELETE FROM checkins WHERE account_id=? AND task_id=? AND status='ATTEMPT_STARTED'",
+            (account_id, task_id),
+        )
+
+
+def _mark_checkin_unknown(account_id, task_id, exc):
+    at = now_iso()
+    message = f"Submission result unknown; confirmation required: {exc.__class__.__name__}"
+    with connect() as db:
+        db.execute(
+            "UPDATE checkins SET status='SUBMIT_UNKNOWN',response_message=?,updated_at=? "
+            "WHERE account_id=? AND task_id=? AND status='ATTEMPT_STARTED'",
+            (message, at, account_id, task_id),
+        )
+
+
 def _temporary_upstream_failure(exc):
+    if isinstance(exc, UpstreamUnavailable):
+        return True
     text = str(exc).lower()
     return any(marker in text for marker in (
         "request failed", "timed out", "temporary backoff", "temporarily",
         "http 429", "http 5", "connection",
+        "熔断", "限流", "过于频繁", "invalid json",
     ))
 
 
@@ -258,10 +296,11 @@ def _save_task(task, detail):
 def _save_checkin(account, task, status, message):
     at = now_iso()
     with connect() as db:
-        db.execute(
-            "INSERT INTO checkins(date,task_id,task_name,start_time,end_time,submit_time,status,response_message,created_at,updated_at,account_id,account_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        cursor = db.execute(
+            "INSERT OR IGNORE INTO checkins(date,task_id,task_name,start_time,end_time,submit_time,status,response_message,created_at,updated_at,account_id,account_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (at[:10], task.task_id, task.name, task.start_time, task.end_time, at, status, message, at, at, account["id"], account["name"]),
         )
+    return cursor.rowcount > 0
 
 
 def start_scheduler():

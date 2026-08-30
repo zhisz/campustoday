@@ -1,9 +1,12 @@
 import json
 import os
 import ssl
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -13,6 +16,15 @@ from .device import configured_device
 
 class ProtocolError(RuntimeError):
     pass
+
+
+class UpstreamUnavailable(ProtocolError):
+    pass
+
+
+_upstream_gate = threading.Lock()
+_next_request_at = 0.0
+_circuit_until = 0.0
 
 
 class JxustAttendanceClient(AttendanceClient):
@@ -28,7 +40,7 @@ class JxustAttendanceClient(AttendanceClient):
     SUBMIT_PATH = "/wec-counselor-attendance-apps/student/attendance/submitSign"
     IDENTITY_PATH = "/portal/portal/getLoginUserInfo"
 
-    def __init__(self, session_cookie: Optional[str] = None, device_profile=None):
+    def __init__(self, session_cookie: Optional[str] = None, device_profile=None, purpose="interactive"):
         self.base_url = os.getenv("CPDAILY_BASE_URL", "https://fdm.jxust.edu.cn").rstrip("/")
         parsed = urllib.parse.urlsplit(self.base_url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.path:
@@ -41,6 +53,7 @@ class JxustAttendanceClient(AttendanceClient):
             raise RuntimeError("CPDAILY_SESSION_COOKIE contains invalid characters")
         self.timeout = max(3, min(int(os.getenv("CPDAILY_TIMEOUT_SECONDS", "15")), 60))
         self.device_profile = device_profile
+        self.purpose = purpose if purpose in {"interactive", "background", "scheduler", "submission"} else "interactive"
 
     def list_today(self) -> list[AttendanceTask]:
         datas = self._post(self.LIST_PATH)
@@ -162,20 +175,28 @@ class JxustAttendanceClient(AttendanceClient):
             },
         )
         opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
-        try:
-            with opener.open(request, timeout=self.timeout) as response:
-                raw = response.read(2_000_000)
-        except urllib.error.HTTPError as exc:
-            raise ProtocolError(f"Attendance API returned HTTP {exc.code}") from None
-        except urllib.error.URLError as exc:
-            raise ProtocolError("Attendance API request failed") from exc
-        try:
-            envelope = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise ProtocolError("Attendance API returned invalid JSON") from None
-        if not isinstance(envelope, dict) or str(envelope.get("code")) != "0":
-            raise ProtocolError("Attendance API returned a business error")
-        return envelope.get("datas")
+        with _request_slot(self.purpose):
+            try:
+                with opener.open(request, timeout=self.timeout) as response:
+                    raw = response.read(2_000_000)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429:
+                    _trip_upstream_circuit(1800)
+                elif exc.code >= 500:
+                    _trip_upstream_circuit()
+                raise ProtocolError(f"Attendance API returned HTTP {exc.code}") from None
+            except urllib.error.URLError as exc:
+                _trip_upstream_circuit()
+                raise ProtocolError("Attendance API request failed") from exc
+            try:
+                envelope = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                _trip_upstream_circuit()
+                raise ProtocolError("Attendance API returned invalid JSON") from None
+            _mark_upstream_success()
+            if not isinstance(envelope, dict) or str(envelope.get("code")) != "0":
+                raise ProtocolError("Attendance API returned a business error")
+            return envelope.get("datas")
 
     def _portal_post(self, path: str):
         target = self.base_url + path
@@ -199,22 +220,85 @@ class JxustAttendanceClient(AttendanceClient):
             },
         )
         opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
-        try:
-            with opener.open(request, timeout=self.timeout) as response:
-                raw = response.read(2_000_000)
-        except urllib.error.HTTPError as exc:
-            raise ProtocolError(f"Portal API returned HTTP {exc.code}") from None
-        except urllib.error.URLError as exc:
-            raise ProtocolError("Portal API request failed") from exc
-        try:
-            envelope = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise ProtocolError("Portal API returned invalid JSON") from None
-        if not isinstance(envelope, dict) or str(envelope.get("code")) != "0":
-            raise ProtocolError("Portal API returned a business error")
-        return envelope.get("datas")
+        with _request_slot(self.purpose):
+            try:
+                with opener.open(request, timeout=self.timeout) as response:
+                    raw = response.read(2_000_000)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429:
+                    _trip_upstream_circuit(1800)
+                elif exc.code >= 500:
+                    _trip_upstream_circuit()
+                raise ProtocolError(f"Portal API returned HTTP {exc.code}") from None
+            except urllib.error.URLError as exc:
+                _trip_upstream_circuit()
+                raise ProtocolError("Portal API request failed") from exc
+            try:
+                envelope = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                _trip_upstream_circuit()
+                raise ProtocolError("Portal API returned invalid JSON") from None
+            _mark_upstream_success()
+            if not isinstance(envelope, dict) or str(envelope.get("code")) != "0":
+                raise ProtocolError("Portal API returned a business error")
+            return envelope.get("datas")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+@contextmanager
+def _request_slot(purpose):
+    global _next_request_at
+    waits = purpose in {"background", "scheduler", "submission"}
+    acquired = _upstream_gate.acquire(timeout=30) if waits else _upstream_gate.acquire(blocking=False)
+    if not acquired:
+        raise UpstreamUnavailable("学校接口请求正在限流，请稍后重试")
+    started = False
+    try:
+        now = time.monotonic()
+        if now < _circuit_until:
+            raise UpstreamUnavailable("学校接口暂时熔断，请稍后自动重试")
+        delay = max(0.0, _next_request_at - now)
+        if delay and not waits:
+            raise UpstreamUnavailable("学校接口请求过于频繁，请稍后重试")
+        if delay:
+            threading.Event().wait(delay)
+        started = True
+        yield
+    finally:
+        if started:
+            _next_request_at = time.monotonic() + _minimum_request_interval()
+        _upstream_gate.release()
+
+
+def _minimum_request_interval():
+    try:
+        configured = float(os.getenv("CPDAILY_MIN_REQUEST_INTERVAL_SECONDS", "5"))
+    except ValueError:
+        configured = 5.0
+    return max(0.0, min(configured, 30.0))
+
+
+def _trip_upstream_circuit(minimum_delay=None):
+    global _circuit_until
+    try:
+        delay = float(os.getenv("CPDAILY_UPSTREAM_BACKOFF_SECONDS", "300"))
+    except ValueError:
+        delay = 300.0
+    if minimum_delay is not None:
+        delay = max(delay, float(minimum_delay))
+    _circuit_until = max(_circuit_until, time.monotonic() + max(10.0, min(delay, 3600.0)))
+
+
+def _mark_upstream_success():
+    global _circuit_until
+    _circuit_until = 0.0
+
+
+def _reset_upstream_gate_for_tests():
+    global _next_request_at, _circuit_until
+    _next_request_at = 0.0
+    _circuit_until = 0.0

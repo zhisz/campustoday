@@ -1,12 +1,15 @@
 import io
 import json
 import os
+import threading
+import time
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from campus.attendance import AttendanceTask
 from campus.device import DeviceProfile
-from campus.jxust import JxustAttendanceClient, ProtocolError
+from campus.jxust import JxustAttendanceClient, ProtocolError, _reset_upstream_gate_for_tests
 
 
 class FakeResponse:
@@ -31,12 +34,16 @@ class JxustClientTest(unittest.TestCase):
                 "CPDAILY_BASE_URL": "https://fdm.jxust.edu.cn",
                 "CPDAILY_SESSION_COOKIE": "session=test-only",
                 "CPDAILY_SUBMIT_ENABLED": "false",
+                "CPDAILY_MIN_REQUEST_INTERVAL_SECONDS": "0",
+                "CPDAILY_UPSTREAM_BACKOFF_SECONDS": "10",
             },
             clear=False,
         )
         self.env.start()
+        _reset_upstream_gate_for_tests()
 
     def tearDown(self):
+        _reset_upstream_gate_for_tests()
         self.env.stop()
 
     def test_list_today_parses_verified_shape(self):
@@ -122,6 +129,82 @@ class JxustClientTest(unittest.TestCase):
         with patch.dict(os.environ, {"CPDAILY_SESSION_COOKIE": ""}):
             with self.assertRaisesRegex(RuntimeError, "SESSION_COOKIE"):
                 JxustAttendanceClient()
+
+    def test_background_requests_are_strictly_serialized_and_spaced(self):
+        envelope = {
+            "code": "0", "datas": {
+                "unSignedTasks": [], "codeRcvdTasks": [], "signedTasks": [],
+                "leaveTasks": [], "registerLeaveTasks": [],
+            },
+        }
+        starts = []
+        active = 0
+        max_active = 0
+        state_lock = threading.Lock()
+
+        def opened(*_args, **_kwargs):
+            nonlocal active, max_active
+            with state_lock:
+                starts.append(time.monotonic())
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.02)
+            with state_lock:
+                active -= 1
+            return FakeResponse(envelope)
+
+        errors = []
+        def request():
+            try:
+                JxustAttendanceClient(purpose="background").list_today()
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.dict(os.environ, {"CPDAILY_MIN_REQUEST_INTERVAL_SECONDS": "0.05"}), \
+             patch("urllib.request.OpenerDirector.open", side_effect=opened):
+            threads = [threading.Thread(target=request) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=1)
+        self.assertEqual(errors, [])
+        self.assertEqual(max_active, 1)
+        self.assertGreaterEqual(starts[1] - starts[0], 0.065)
+
+    def test_interactive_request_fails_fast_while_gate_is_busy(self):
+        envelope = {
+            "code": "0", "datas": {
+                "unSignedTasks": [], "codeRcvdTasks": [], "signedTasks": [],
+                "leaveTasks": [], "registerLeaveTasks": [],
+            },
+        }
+        entered = threading.Event()
+        release = threading.Event()
+
+        def opened(*_args, **_kwargs):
+            entered.set()
+            release.wait(timeout=1)
+            return FakeResponse(envelope)
+
+        with patch("urllib.request.OpenerDirector.open", side_effect=opened):
+            worker = threading.Thread(
+                target=lambda: JxustAttendanceClient(purpose="background").list_today()
+            )
+            worker.start()
+            self.assertTrue(entered.wait(timeout=1))
+            with self.assertRaisesRegex(ProtocolError, "限流"):
+                JxustAttendanceClient(purpose="interactive").list_today()
+            release.set()
+            worker.join(timeout=1)
+        self.assertFalse(worker.is_alive())
+
+    def test_transport_failure_opens_circuit_without_a_second_network_call(self):
+        with patch("urllib.request.OpenerDirector.open", side_effect=urllib.error.URLError("down")) as opened:
+            with self.assertRaisesRegex(ProtocolError, "request failed"):
+                JxustAttendanceClient(purpose="background").list_today()
+            with self.assertRaisesRegex(ProtocolError, "熔断"):
+                JxustAttendanceClient(purpose="background").list_today()
+        self.assertEqual(opened.call_count, 1)
 
 
 if __name__ == "__main__":
