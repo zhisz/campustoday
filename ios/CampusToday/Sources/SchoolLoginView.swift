@@ -14,7 +14,7 @@ struct SchoolLoginView: View {
             VStack(spacing: 0) {
                 HStack(spacing: 9) {
                     Image(systemName: cookieValue == nil ? "lock.shield" : "checkmark.shield.fill")
-                        .foregroundStyle(cookieValue == nil ? .secondary : .green)
+                        .foregroundStyle(cookieValue == nil ? Color.secondary : Color.green)
                     Text(status).font(.footnote).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.horizontal, 16).padding(.vertical, 11)
