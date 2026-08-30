@@ -2,6 +2,7 @@ import SwiftUI
 import WebKit
 
 private let schoolPortalURL = URL(string: "https://fdm.jxust.edu.cn/portal/index.html")!
+private let supportedPortalUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36"
 
 struct SchoolLoginView: View {
     @EnvironmentObject private var store: SessionStore
@@ -51,6 +52,10 @@ private struct SchoolPortalWebView: UIViewRepresentable {
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        // The legacy school CAS rejects WKWebView/Safari even though its pages
+        // work correctly with WebKit. Use a browser version from its explicit
+        // allowlist for the entire authentication flow.
+        webView.customUserAgent = supportedPortalUserAgent
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
         webView.load(URLRequest(url: schoolPortalURL, cachePolicy: .reloadIgnoringLocalCacheData))

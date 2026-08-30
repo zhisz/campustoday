@@ -1,5 +1,9 @@
 name: iOS build
 
+env:
+  IOS_VERSION: 1.0.1
+  IOS_BUILD: 2
+
 on:
   push:
     branches: [main]
@@ -43,14 +47,14 @@ jobs:
         run: |
           APP="$RUNNER_TEMP/CampusTodayDevice/Build/Products/Release-iphoneos/CampusToday.app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")" = "xyz.zhisz.campustoday"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = "1.0.0"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "1"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = "$IOS_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "$IOS_BUILD"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
           cd "$RUNNER_TEMP/ipa"
-          ditto -c -k --sequesterRsrc --keepParent Payload campustoday-ios-1.0.0-unsigned.ipa
+          ditto -c -k --sequesterRsrc --keepParent Payload "campustoday-ios-$IOS_VERSION-unsigned.ipa"
       - uses: actions/upload-artifact@v4
         with:
-          name: campustoday-ios-1.0.0-unsigned
-          path: ${{ runner.temp }}/ipa/campustoday-ios-1.0.0-unsigned.ipa
+          name: campustoday-ios-${{ env.IOS_VERSION }}-unsigned
+          path: ${{ runner.temp }}/ipa/campustoday-ios-${{ env.IOS_VERSION }}-unsigned.ipa
           if-no-files-found: error
