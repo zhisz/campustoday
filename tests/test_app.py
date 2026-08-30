@@ -179,13 +179,21 @@ class AppTest(unittest.TestCase):
         self.assertEqual(ios.status_code, 201)
 
     def test_ios_release_metadata_is_platform_specific(self):
-        releases = [{"version_code": 1, "version_name": "1.0.0", "filename": "campustoday-ios-1.0.0.ipa", "mandatory": False}]
+        ipa = f"{self.tmp.name}/ios/campustoday-ios-1.0.0-unsigned.ipa"
+        with open(ipa, "wb") as handle:
+            handle.write(b"unsigned-test-ipa")
+        releases = [{"version_code": 1, "version_name": "1.0.0", "filename": "campustoday-ios-1.0.0-unsigned.ipa", "mandatory": False,
+                     "distribution_status": "unsigned", "size_label": "17 B"}]
         with open(f"{self.tmp.name}/ios/releases.json", "w", encoding="utf-8") as handle:
             json.dump(releases, handle)
         version = self.client.get("/api/v1/app/version?platform=ios")
         self.assertEqual(version.status_code, 200)
         self.assertEqual(version.json["platform"], "ios")
-        self.assertTrue(version.json["download_url"].endswith("/download-ios/campustoday-ios-1.0.0.ipa"))
+        self.assertTrue(version.json["download_url"].endswith("/download-ios/campustoday-ios-1.0.0-unsigned.ipa"))
+        self.assertEqual(self.client.get("/download-ios/campustoday-ios-1.0.0-unsigned.ipa").data, b"unsigned-test-ipa")
+        page = self.client.get("/app").get_data(as_text=True)
+        self.assertIn("下载未签名 IPA", page)
+        self.assertIn("下载后需自行签名安装", page)
 
     def test_mobile_landing_advertises_both_native_clients(self):
         page = self.client.get("/app").get_data(as_text=True)

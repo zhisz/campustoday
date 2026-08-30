@@ -27,3 +27,26 @@ jobs:
           -destination 'generic/platform=iOS Simulator'
           CODE_SIGNING_ALLOWED=NO
           build
+      - name: Build unsigned iPhoneOS app
+        run: >-
+          xcodebuild
+          -project ios/CampusToday.xcodeproj
+          -scheme CampusToday
+          -configuration Release
+          -sdk iphoneos
+          -destination 'generic/platform=iOS'
+          -derivedDataPath "$RUNNER_TEMP/CampusTodayDevice"
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          build
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$RUNNER_TEMP/CampusTodayDevice/Build/Products/Release-iphoneos/CampusToday.app" "$RUNNER_TEMP/ipa/Payload/"
+          cd "$RUNNER_TEMP/ipa"
+          ditto -c -k --sequesterRsrc --keepParent Payload campustoday-ios-1.0.0-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: campustoday-ios-1.0.0-unsigned
+          path: ${{ runner.temp }}/ipa/campustoday-ios-1.0.0-unsigned.ipa
+          if-no-files-found: error
