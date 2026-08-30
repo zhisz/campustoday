@@ -1,0 +1,29 @@
+name: iOS build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+
+jobs:
+  simulator-build:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native iOS client
+        run: >-
+          xcodebuild
+          -project ios/CampusToday.xcodeproj
+          -scheme CampusToday
+          -configuration Debug
+          -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
+          build
