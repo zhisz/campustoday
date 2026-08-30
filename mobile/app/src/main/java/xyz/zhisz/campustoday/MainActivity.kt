@@ -1,8 +1,13 @@
 package xyz.zhisz.campustoday
 
+import android.app.DownloadManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -31,6 +36,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.Executors
 
 private const val PORTAL_URL = "https://fdm.jxust.edu.cn/portal/index.html"
@@ -45,6 +51,8 @@ class AppController(private val activity: ComponentActivity) {
     private val store = SecureStore(activity)
     private val api = ApiClient { store.token }
     private val executor = Executors.newSingleThreadExecutor()
+    private val updateExecutor = Executors.newSingleThreadExecutor()
+    private var pendingApkUri: Uri? = null
 
     var authenticated by mutableStateOf(!store.token.isNullOrBlank())
     var accounts by mutableStateOf<List<CampusAccount>>(emptyList())
@@ -55,6 +63,7 @@ class AppController(private val activity: ComponentActivity) {
     var update by mutableStateOf<JSONObject?>(null)
     var versionReady by mutableStateOf(false)
     var versionCheckFailed by mutableStateOf(false)
+    var updateProgress by mutableStateOf<Int?>(null)
     var announcements by mutableStateOf<List<JSONObject>>(emptyList())
     var activeAnnouncement by mutableStateOf<JSONObject?>(null)
 
@@ -159,8 +168,87 @@ class AppController(private val activity: ComponentActivity) {
     fun openSource() { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(SOURCE_URL))) }
 
     fun openUpdate() {
-        update?.optString("download_url")?.takeIf { it.startsWith("https://") }?.let {
-            activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)))
+        if (updateProgress != null) return
+        val latest = update ?: return
+        val url = latest.optString("download_url").takeIf { it.startsWith("https://") }
+            ?: return activity.runOnUiThread { message = "更新下载地址无效" }
+        val versionName = latest.optString("version_name", "latest")
+        val fileName = "CampusToday-$versionName.apk"
+        activity.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.let { File(it, fileName).delete() }
+        val manager = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val request = DownloadManager.Request(Uri.parse(url))
+            .setTitle("CampusToday v$versionName")
+            .setDescription("正在应用内下载更新")
+            .setMimeType(APK_MIME)
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(false)
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalFilesDir(activity, Environment.DIRECTORY_DOWNLOADS, fileName)
+        updateProgress = 0
+        val downloadId = try { manager.enqueue(request) } catch (exc: Exception) {
+            updateProgress = null
+            return activity.runOnUiThread { message = "无法开始下载：${exc.message ?: "未知错误"}" }
+        }
+        updateExecutor.execute { monitorUpdate(manager, downloadId) }
+    }
+
+    fun resumePendingInstall() {
+        val uri = pendingApkUri ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || activity.packageManager.canRequestPackageInstalls()) {
+            pendingApkUri = null
+            launchInstaller(uri)
+        }
+    }
+
+    private fun monitorUpdate(manager: DownloadManager, downloadId: Long) {
+        while (true) {
+            val cursor = manager.query(DownloadManager.Query().setFilterById(downloadId))
+            if (!cursor.moveToFirst()) {
+                cursor.close()
+                activity.runOnUiThread { updateProgress = null; message = "更新下载任务已丢失，请重试" }
+                return
+            }
+            val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+            val downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+            val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+            cursor.close()
+            val progress = if (total > 0) ((downloaded * 100) / total).toInt().coerceIn(0, 99) else 0
+            activity.runOnUiThread { updateProgress = progress }
+            when (status) {
+                DownloadManager.STATUS_SUCCESSFUL -> {
+                    val uri = manager.getUriForDownloadedFile(downloadId)
+                    activity.runOnUiThread {
+                        updateProgress = null
+                        if (uri == null) message = "更新已下载，但无法打开安装包"
+                        else requestInstall(uri)
+                    }
+                    return
+                }
+                DownloadManager.STATUS_FAILED -> {
+                    activity.runOnUiThread { updateProgress = null; message = "更新下载失败，请检查网络后重试" }
+                    return
+                }
+            }
+            Thread.sleep(500)
+        }
+    }
+
+    private fun requestInstall(uri: Uri) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
+            pendingApkUri = uri
+            message = "请允许 CampusToday 安装应用，返回后将自动继续"
+            activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")))
+        } else launchInstaller(uri)
+    }
+
+    private fun launchInstaller(uri: Uri) {
+        try {
+            activity.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, APK_MIME)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (exc: Exception) {
+            message = "无法打开安装程序：${exc.message ?: "未知错误"}"
         }
     }
 
@@ -206,12 +294,21 @@ class AppController(private val activity: ComponentActivity) {
 }
 
 class MainActivity : ComponentActivity() {
+    private lateinit var controller: AppController
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val controller = AppController(this)
+        controller = AppController(this)
         setContent { CampusTheme { CampusApp(controller) } }
     }
+
+    override fun onResume() {
+        super.onResume()
+        if (::controller.isInitialized) controller.resumePendingInstall()
+    }
 }
+
+private const val APK_MIME = "application/vnd.android.package-archive"
 
 @Composable
 fun CampusTheme(content: @Composable () -> Unit) {
@@ -258,8 +355,11 @@ fun CampusApp(controller: AppController) {
         }) { Text(msg) } }
         controller.update?.let { latest -> AlertDialog(onDismissRequest = { controller.update = null },
             title = { Text("发现新版本 v${latest.optString("version_name")}") },
-            text = { Text(latest.optString("release_notes", "优化使用体验")) },
-            confirmButton = { Button(onClick = { controller.openUpdate() }) { Text("前往下载") } },
+            text = { Column {
+                Text(latest.optString("release_notes", "优化使用体验"))
+                controller.updateProgress?.let { LinearProgressIndicator(progress = { it / 100f }, Modifier.fillMaxWidth().padding(top = 16.dp)); Text("正在下载 $it%", fontSize = 12.sp, color = Color(0xFF6B778C)) }
+            } },
+            confirmButton = { Button(onClick = { controller.openUpdate() }, enabled = controller.updateProgress == null) { Text(if (controller.updateProgress == null) "应用内下载" else "下载中") } },
             dismissButton = { TextButton(onClick = { controller.update = null }) { Text("稍后") } }) }
         controller.activeAnnouncement?.let { item -> AlertDialog(onDismissRequest = { controller.markAnnouncementRead() },
             title = { Text(item.optString("title", "公告")) },
@@ -278,7 +378,11 @@ fun VersionGate(controller: AppController) {
             latest?.optBoolean("mandatory") == true -> {
                 Text("必须更新后才能继续", fontSize = 29.sp, fontWeight = FontWeight.ExtraBold)
                 Text("当前版本已停止服务，请更新到 v${latest.optString("version_name")}。", color = Color(0xFF6B778C), modifier = Modifier.padding(top = 12.dp, bottom = 24.dp))
-                Button(onClick = { controller.openUpdate() }, Modifier.fillMaxWidth().height(52.dp)) { Text("立即更新") }
+                controller.updateProgress?.let { progress ->
+                    LinearProgressIndicator(progress = { progress / 100f }, Modifier.fillMaxWidth().padding(bottom = 8.dp))
+                    Text("正在应用内下载 $progress%", color = Color(0xFF6B778C), modifier = Modifier.padding(bottom = 12.dp))
+                }
+                Button(onClick = { controller.openUpdate() }, enabled = controller.updateProgress == null, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (controller.updateProgress == null) "应用内下载并更新" else "正在下载") }
             }
             controller.versionCheckFailed -> {
                 Text("无法检查最新版本", fontSize = 24.sp, fontWeight = FontWeight.Bold)
