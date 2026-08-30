@@ -1,7 +1,12 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from app.dashboard import _flatten_history, _school_data, invalidate_school_cache
+from app.dashboard import (
+    _flatten_history,
+    _school_data,
+    _wait_for_school_refresh,
+    invalidate_school_cache,
+)
 
 
 class DashboardHistoryTest(unittest.TestCase):
@@ -33,7 +38,9 @@ class DashboardHistoryTest(unittest.TestCase):
         client.month_history.return_value = {"rows": []}
         invalidate_school_cache(account["id"])
         with patch("app.dashboard.create_client", return_value=client) as create:
-            _school_data(account, "2026-08")
+            with self.assertRaisesRegex(RuntimeError, "后台刷新"):
+                _school_data(account, "2026-08")
+            _wait_for_school_refresh(account["id"])
             _school_data(account, "2026-08")
         create.assert_called_once_with(account["session_cookie"])
         client.list_today.assert_called_once_with()

@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -12,8 +13,13 @@ from .db import connect
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 SCHOOL_CACHE_SECONDS = 180
+SCHOOL_ERROR_RETRY_SECONDS = 15
 _school_cache = {}
 _school_cache_lock = threading.Lock()
+_school_refreshes = {}
+_school_generations = {}
+_school_retry_after = {}
+_school_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="school-cache")
 HISTORY_GROUPS = (
     ("signedTasks", "已签到", "ok"),
     ("codeRcvdTasks", "已扫码", "ok"),
@@ -61,7 +67,7 @@ def build_dashboard(account_id=None):
     for account in account_rows:
         result["accounts"].append(_account_view(account, account["session_status"] == "VALID"))
     if selected:
-        session_valid = False
+        session_valid = selected["session_status"] == "VALID"
         try:
             school_data = _school_data(selected, result["history_month"])
             tasks = school_data["tasks"]
@@ -84,25 +90,102 @@ def build_dashboard(account_id=None):
 def invalidate_school_cache(account_id):
     with _school_cache_lock:
         _school_cache.pop(account_id, None)
+        _school_retry_after.pop(account_id, None)
+        _school_generations[account_id] = _school_generations.get(account_id, 0) + 1
+        refresh = _school_refreshes.pop(account_id, None)
+        if refresh:
+            refresh["future"].cancel()
 
 
 def _school_data(account, year_month):
     key = account["id"]
+    now = time.monotonic()
+    future = None
     with _school_cache_lock:
         cached = _school_cache.get(key)
-        if cached and time.monotonic() - cached["stored_at"] < SCHOOL_CACHE_SECONDS:
-            if cached.get("error"):
+        same_month = cached and cached.get("year_month") == year_month
+        if same_month and cached.get("data") is not None:
+            if now - cached["stored_at"] < SCHOOL_CACHE_SECONDS:
+                return cached["data"]
+        elif same_month and cached.get("error"):
+            if now - cached["stored_at"] < SCHOOL_ERROR_RETRY_SECONDS:
                 raise RuntimeError(cached["error"])
+
+        refresh = _school_refreshes.get(key)
+        refresh_matches = refresh and refresh["year_month"] == year_month and not refresh["future"].done()
+        retry_allowed = now >= _school_retry_after.get(key, 0)
+        if not refresh_matches and retry_allowed:
+            generation = _school_generations.get(key, 0)
+            future = _school_executor.submit(_fetch_school_data, dict(account), year_month)
+            _school_refreshes[key] = {
+                "future": future,
+                "year_month": year_month,
+                "generation": generation,
+            }
+
+        if same_month and cached.get("data") is not None:
             return cached["data"]
-        try:
-            client = create_client(account["session_cookie"])
-            data = {"tasks": client.list_today(), "history": client.month_history(year_month)}
-            _school_cache[key] = {"stored_at": time.monotonic(), "data": data, "error": None}
-            return data
-        except Exception as exc:
-            error = str(exc)
-            _school_cache[key] = {"stored_at": time.monotonic(), "data": None, "error": error}
-            raise
+
+    if future is not None:
+        future.add_done_callback(
+            lambda completed, account_id=key, month=year_month: _finish_school_refresh(
+                account_id, month, completed
+            )
+        )
+    raise RuntimeError("学校数据正在后台刷新，请稍后重试")
+
+
+def _fetch_school_data(account, year_month):
+    client = create_client(account["session_cookie"])
+    return {"tasks": client.list_today(), "history": client.month_history(year_month)}
+
+
+def _finish_school_refresh(account_id, year_month, future):
+    try:
+        data, error = future.result(), None
+    except Exception as exc:
+        data, error = None, str(exc)
+    now = time.monotonic()
+    with _school_cache_lock:
+        refresh = _school_refreshes.get(account_id)
+        if not refresh or refresh["future"] is not future:
+            return
+        _school_refreshes.pop(account_id, None)
+        if refresh["generation"] != _school_generations.get(account_id, 0):
+            return
+        if error:
+            previous = _school_cache.get(account_id)
+            if not previous or previous.get("year_month") != year_month or previous.get("data") is None:
+                _school_cache[account_id] = {
+                    "stored_at": now,
+                    "year_month": year_month,
+                    "data": None,
+                    "error": error,
+                }
+            _school_retry_after[account_id] = now + SCHOOL_ERROR_RETRY_SECONDS
+            return
+        _school_cache[account_id] = {
+            "stored_at": now,
+            "year_month": year_month,
+            "data": data,
+            "error": None,
+        }
+        _school_retry_after.pop(account_id, None)
+
+
+def _wait_for_school_refresh(account_id, timeout=2):
+    """Wait for an account refresh in tests and maintenance commands."""
+    with _school_cache_lock:
+        refresh = _school_refreshes.get(account_id)
+    if not refresh:
+        return
+    refresh["future"].result(timeout=timeout)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _school_cache_lock:
+            if _school_refreshes.get(account_id) is not refresh:
+                return
+        time.sleep(0.001)
 
 
 def _parse_datetime(value):
