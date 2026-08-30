@@ -22,7 +22,10 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]{3,40}$")
 def require_current_app_version():
     if request.path == "/api/v1/app/version":
         return None
-    releases = load_releases()
+    platform = request.headers.get("X-App-Platform", "android").strip().lower()
+    if platform not in {"android", "ios"}:
+        platform = "android"
+    releases = load_releases(platform)
     if not releases or not releases[0].get("mandatory"):
         return None
     latest = releases[0]
@@ -32,13 +35,17 @@ def require_current_app_version():
         supplied = 0
     if supplied >= int(latest.get("version_code", 0)):
         return None
+    download_url = latest.get("download_url")
+    if not download_url:
+        route = "/download-ios/" if platform == "ios" else "/download/"
+        download_url = request.url_root.rstrip("/") + route + latest.get("filename", "")
     return jsonify(
         error=f"当前 App 版本已停用，请更新到 v{latest.get('version_name', '')}",
         upgrade_required=True,
         latest={
             "version_code": latest.get("version_code"),
             "version_name": latest.get("version_name"),
-            "download_url": request.url_root.rstrip("/") + "/download/" + latest.get("filename", ""),
+            "download_url": download_url,
         },
     ), 401
 
@@ -146,6 +153,23 @@ def logout():
 @app_login_required
 def me():
     return jsonify(user=g.app_user)
+
+
+@mobile_api.delete("/me")
+@app_login_required
+def me_delete():
+    data = request.get_json(silent=True) or {}
+    password = str(data.get("password") or "")
+    with connect() as db:
+        user = db.execute("SELECT password_hash FROM app_users WHERE id=?", (g.app_user["id"],)).fetchone()
+        if not user or not check_password_hash(user["password_hash"], password):
+            return _json_error("密码错误，未删除账号", 403)
+        account_ids = [row["id"] for row in db.execute("SELECT id FROM campus_accounts WHERE owner_user_id=?", (g.app_user["id"],))]
+        if account_ids:
+            placeholders = ",".join("?" for _ in account_ids)
+            db.execute(f"DELETE FROM checkins WHERE account_id IN ({placeholders})", account_ids)
+        db.execute("DELETE FROM app_users WHERE id=?", (g.app_user["id"],))
+    return jsonify(ok=True)
 
 
 def _account_summary(account):
@@ -269,8 +293,9 @@ def account_delete(account_id):
     return jsonify(ok=True)
 
 
-def load_releases():
-    path = os.path.join(os.getenv("APKS_PATH", "/data/apks"), "releases.json")
+def load_releases(platform="android"):
+    directory = os.getenv("IOS_RELEASES_PATH", "/data/ios") if platform == "ios" else os.getenv("APKS_PATH", "/data/apks")
+    path = os.path.join(directory, "releases.json")
     try:
         with open(path, encoding="utf-8") as handle:
             releases = json.load(handle)
@@ -281,11 +306,17 @@ def load_releases():
 
 @mobile_api.get("/app/version")
 def app_version():
-    releases = load_releases()
+    platform = request.args.get("platform", "android").strip().lower()
+    if platform not in {"android", "ios"}:
+        return _json_error("不支持的客户端平台")
+    releases = load_releases(platform)
     if not releases:
         return _json_error("暂无可用版本", 404)
     latest = dict(releases[0])
-    latest["download_url"] = request.url_root.rstrip("/") + "/download/" + latest["filename"]
+    if not latest.get("download_url"):
+        route = "/download-ios/" if platform == "ios" else "/download/"
+        latest["download_url"] = request.url_root.rstrip("/") + route + latest["filename"]
+    latest["platform"] = platform
     return jsonify(latest)
 
 

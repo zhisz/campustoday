@@ -18,7 +18,7 @@ from .db import connect, get_setting, log_event, migrate, now_iso, set_settings
 from .location import verify_location
 from .mobile_api import load_releases, mobile_api
 from .scheduler import start_scheduler, status as scheduler_status
-from .templates import ACCOUNTS, ANNOUNCEMENTS, APP_USERS, BASE, DASHBOARD, FEEDBACK_ADMIN, LOGIN, MOBILE_LANDING, SETTINGS, TABLE
+from .templates import ACCOUNTS, ANNOUNCEMENTS, APP_USERS, BASE, DASHBOARD, FEEDBACK_ADMIN, LOGIN, MOBILE_LANDING, PRIVACY, SETTINGS, TABLE
 
 
 def create_app():
@@ -74,14 +74,26 @@ def create_app():
 
     @app.get("/app")
     def mobile_landing():
-        releases = load_releases()
-        return render_template_string(MOBILE_LANDING, latest=releases[0] if releases else None)
+        android_releases = load_releases("android")
+        ios_releases = load_releases("ios")
+        return render_template_string(MOBILE_LANDING, latest=android_releases[0] if android_releases else None,
+                                      ios_latest=ios_releases[0] if ios_releases else None)
+
+    @app.get("/privacy")
+    def privacy():
+        return render_template_string(PRIVACY)
 
     @app.get("/download/<path:filename>")
     def mobile_download(filename):
-        if filename not in {item.get("filename") for item in load_releases()}:
+        if filename not in {item.get("filename") for item in load_releases("android")}:
             abort(404)
         return send_from_directory(os.getenv("APKS_PATH", "/data/apks"), filename, as_attachment=True)
+
+    @app.get("/download-ios/<path:filename>")
+    def ios_download(filename):
+        if filename not in {item.get("filename") for item in load_releases("ios")}:
+            abort(404)
+        return send_from_directory(os.getenv("IOS_RELEASES_PATH", "/data/ios"), filename, as_attachment=True)
 
     @app.route("/login", methods=["GET", "POST"])
     def login():

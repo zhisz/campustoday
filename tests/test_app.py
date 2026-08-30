@@ -11,7 +11,8 @@ class AppTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.makedirs(f"{self.tmp.name}/apks")
-        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", APKS_PATH=f"{self.tmp.name}/apks", CPDAILY_MODE="disabled", CPDAILY_SESSION_COOKIE="", AUTO_ENABLED="false", LOCATION_MODE="trusted_device", LOCATION_PROOF_TOKEN="proof-secret", LOCATION_MAX_AGE_SECONDS="300", LOCATION_MAX_ACCURACY_METERS="100", CPDAILY_DEVICE_ID="device-default", CPDAILY_APP_VERSION="9.9.6", CPDAILY_DEVICE_MODEL="Default Model", CPDAILY_SYSTEM_NAME="Android", CPDAILY_SYSTEM_VERSION="16")
+        os.makedirs(f"{self.tmp.name}/ios")
+        os.environ.update(APP_SECRET="test-secret", ADMIN_USERNAME="admin", ADMIN_PASSWORD="a-secure-test-password", DATABASE_PATH=f"{self.tmp.name}/test.db", APKS_PATH=f"{self.tmp.name}/apks", IOS_RELEASES_PATH=f"{self.tmp.name}/ios", CPDAILY_MODE="disabled", CPDAILY_SESSION_COOKIE="", AUTO_ENABLED="false", LOCATION_MODE="trusted_device", LOCATION_PROOF_TOKEN="proof-secret", LOCATION_MAX_AGE_SECONDS="300", LOCATION_MAX_ACCURACY_METERS="100", CPDAILY_DEVICE_ID="device-default", CPDAILY_APP_VERSION="9.9.6", CPDAILY_DEVICE_MODEL="Default Model", CPDAILY_SYSTEM_NAME="Android", CPDAILY_SYSTEM_VERSION="16")
         from app import create_app
         self.app = create_app(); self.app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
         self.client = self.app.test_client()
@@ -134,6 +135,18 @@ class AppTest(unittest.TestCase):
         toggled = self.client.patch(f"/api/v1/accounts/{account_id}", json={"auto_enabled": True}, headers=first)
         self.assertTrue(toggled.json["account"]["auto_enabled"])
 
+    def test_mobile_user_can_delete_account_and_associated_data(self):
+        registered = self.client.post("/api/v1/auth/register", json={"username": "delete_user", "password": "strong-pass-123"})
+        headers = {"Authorization": f"Bearer {registered.json['token']}"}
+        wrong = self.client.delete("/api/v1/me", json={"password": "wrong-password"}, headers=headers)
+        self.assertEqual(wrong.status_code, 403)
+        deleted = self.client.delete("/api/v1/me", json={"password": "strong-pass-123"}, headers=headers)
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(self.client.get("/api/v1/accounts", headers=headers).status_code, 401)
+        from app.db import connect
+        with connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM app_users WHERE username='delete_user'").fetchone()[0], 0)
+
     def test_mobile_release_metadata_and_download(self):
         apk = f"{self.tmp.name}/apks/campustoday-1.0.0.apk"
         with open(apk, "wb") as handle:
@@ -147,7 +160,7 @@ class AppTest(unittest.TestCase):
         proxied = self.client.get("/api/v1/app/version", headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "campustoday.example"})
         self.assertEqual(proxied.json["download_url"], "https://campustoday.example/download/campustoday-1.0.0.apk")
         self.assertEqual(self.client.get("/download/campustoday-1.0.0.apk").data, b"test-apk")
-        self.assertIn("下载最新版 APK", self.client.get("/app").get_data(as_text=True))
+        self.assertIn("下载 Android APK", self.client.get("/app").get_data(as_text=True))
         self.assertIn("https://github.com/zhisz/campustoday", self.client.get("/app").get_data(as_text=True))
 
     def test_mandatory_release_rejects_old_clients(self):
@@ -160,6 +173,29 @@ class AppTest(unittest.TestCase):
         self.assertTrue(blocked.json["upgrade_required"])
         current = self.client.post("/api/v1/auth/register", json=payload, headers={"X-App-Version-Code": "7"})
         self.assertEqual(current.status_code, 201)
+        ios_payload = {"username": "ios_user", "password": "strong-pass-123"}
+        ios = self.client.post("/api/v1/auth/register", json=ios_payload,
+            headers={"X-App-Platform": "ios", "X-App-Version-Code": "1"})
+        self.assertEqual(ios.status_code, 201)
+
+    def test_ios_release_metadata_is_platform_specific(self):
+        releases = [{"version_code": 1, "version_name": "1.0.0", "filename": "campustoday-ios-1.0.0.ipa", "mandatory": False}]
+        with open(f"{self.tmp.name}/ios/releases.json", "w", encoding="utf-8") as handle:
+            json.dump(releases, handle)
+        version = self.client.get("/api/v1/app/version?platform=ios")
+        self.assertEqual(version.status_code, 200)
+        self.assertEqual(version.json["platform"], "ios")
+        self.assertTrue(version.json["download_url"].endswith("/download-ios/campustoday-ios-1.0.0.ipa"))
+
+    def test_mobile_landing_advertises_both_native_clients(self):
+        page = self.client.get("/app").get_data(as_text=True)
+        self.assertIn("CampusToday for Android &amp; iOS", page)
+        self.assertIn("Apple iOS", page)
+        self.assertIn("查看 iOS 客户端源码", page)
+        self.assertIn("需要 Apple Developer 签名后安装", page)
+        privacy = self.client.get("/privacy")
+        self.assertEqual(privacy.status_code, 200)
+        self.assertIn("客户端不申请定位权限", privacy.get_data(as_text=True))
 
     def test_announcements_and_nonanonymous_feedback(self):
         registered = self.client.post("/api/v1/auth/register", json={"username": "feedback_user", "password": "strong-pass-123"})

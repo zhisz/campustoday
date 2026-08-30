@@ -1,0 +1,25 @@
+name: CampusToday
+options:
+  bundleIdPrefix: xyz.zhisz
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+targets:
+  CampusToday:
+    type: application
+    platform: iOS
+    sources:
+      - CampusToday/Sources
+      - CampusToday/Resources
+    info:
+      path: CampusToday/Resources/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: xyz.zhisz.campustoday
+        PRODUCT_NAME: CampusToday
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 1
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic

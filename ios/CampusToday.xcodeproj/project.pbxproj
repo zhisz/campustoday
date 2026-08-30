@@ -1,0 +1,85 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		100000000000000000000001 /* CampusTodayApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* CampusTodayApp.swift */; };
+		100000000000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* Models.swift */; };
+		100000000000000000000003 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* APIClient.swift */; };
+		100000000000000000000004 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* KeychainStore.swift */; };
+		100000000000000000000005 /* DeviceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* DeviceInfo.swift */; };
+		100000000000000000000006 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* SessionStore.swift */; };
+		100000000000000000000007 /* AuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* AuthView.swift */; };
+		100000000000000000000008 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* HomeView.swift */; };
+		100000000000000000000009 /* AccountDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* AccountDetailView.swift */; };
+		10000000000000000000000A /* FeedbackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000A /* FeedbackView.swift */; };
+		10000000000000000000000B /* SchoolLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000B /* SchoolLoginView.swift */; };
+		10000000000000000000000C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000C /* Assets.xcassets */; };
+		10000000000000000000000D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000D /* PrivacyInfo.xcprivacy */; };
+		10000000000000000000000E /* AccountPrivacyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* AccountPrivacyView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		200000000000000000000001 /* CampusTodayApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CampusTodayApp.swift; sourceTree = "<group>"; };
+		200000000000000000000002 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		200000000000000000000003 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		200000000000000000000004 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		200000000000000000000005 /* DeviceInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceInfo.swift; sourceTree = "<group>"; };
+		200000000000000000000006 /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
+		200000000000000000000007 /* AuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthView.swift; sourceTree = "<group>"; };
+		200000000000000000000008 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		200000000000000000000009 /* AccountDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDetailView.swift; sourceTree = "<group>"; };
+		20000000000000000000000A /* FeedbackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackView.swift; sourceTree = "<group>"; };
+		20000000000000000000000B /* SchoolLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchoolLoginView.swift; sourceTree = "<group>"; };
+		20000000000000000000000C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		20000000000000000000000D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		20000000000000000000000E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		20000000000000000000000F /* CampusToday.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CampusToday.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000010 /* AccountPrivacyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountPrivacyView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		300000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		400000000000000000000001 = {isa = PBXGroup; children = (400000000000000000000002 /* CampusToday */, 400000000000000000000005 /* Products */); sourceTree = "<group>"; };
+		400000000000000000000002 /* CampusToday */ = {isa = PBXGroup; children = (400000000000000000000003 /* Sources */, 400000000000000000000004 /* Resources */); path = CampusToday; sourceTree = "<group>"; };
+		400000000000000000000003 /* Sources */ = {isa = PBXGroup; children = (200000000000000000000001,200000000000000000000002,200000000000000000000003,200000000000000000000004,200000000000000000000005,200000000000000000000006,200000000000000000000007,200000000000000000000008,200000000000000000000009,20000000000000000000000A,20000000000000000000000B,200000000000000000000010); path = Sources; sourceTree = "<group>"; };
+		400000000000000000000004 /* Resources */ = {isa = PBXGroup; children = (20000000000000000000000C,20000000000000000000000D,20000000000000000000000E); path = Resources; sourceTree = "<group>"; };
+		400000000000000000000005 /* Products */ = {isa = PBXGroup; children = (20000000000000000000000F /* CampusToday.app */); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		500000000000000000000001 /* CampusToday */ = {isa = PBXNativeTarget; buildConfigurationList = 800000000000000000000002; buildPhases = (600000000000000000000001,300000000000000000000001,600000000000000000000002); buildRules = (); dependencies = (); name = CampusToday; productName = CampusToday; productReference = 20000000000000000000000F; productType = "com.apple.product-type.application"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		500000000000000000000002 /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 1600; LastUpgradeCheck = 1600; TargetAttributes = {500000000000000000000001 = {CreatedOnToolsVersion = 16.0; };};}; buildConfigurationList = 800000000000000000000001; compatibilityVersion = "Xcode 15.0"; developmentRegion = zh_CN; hasScannedForEncodings = 0; knownRegions = (Base, zh_CN, en); mainGroup = 400000000000000000000001; productRefGroup = 400000000000000000000005; projectDirPath = ""; projectRoot = ""; targets = (500000000000000000000001); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		600000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (10000000000000000000000C,10000000000000000000000D); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		600000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000001,100000000000000000000002,100000000000000000000003,100000000000000000000004,100000000000000000000005,100000000000000000000006,100000000000000000000007,100000000000000000000008,100000000000000000000009,10000000000000000000000A,10000000000000000000000B,10000000000000000000000E); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		700000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; ENABLE_TESTABILITY = YES; GCC_OPTIMIZATION_LEVEL = 0; SDKROOT = iphoneos; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = "-Onone";}; name = Debug; };
+		700000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O"; VALIDATE_PRODUCT = YES;}; name = Release; };
+		700000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = CampusToday/Resources/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0.0; PRODUCT_BUNDLE_IDENTIFIER = xyz.zhisz.campustoday; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Debug; };
+		700000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = CampusToday/Resources/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0.0; PRODUCT_BUNDLE_IDENTIFIER = xyz.zhisz.campustoday; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		800000000000000000000001 = {isa = XCConfigurationList; buildConfigurations = (700000000000000000000001,700000000000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		800000000000000000000002 = {isa = XCConfigurationList; buildConfigurations = (700000000000000000000003,700000000000000000000004); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = 500000000000000000000002 /* Project object */;
+}
