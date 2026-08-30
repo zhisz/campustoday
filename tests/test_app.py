@@ -80,6 +80,30 @@ class AppTest(unittest.TestCase):
         with connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM campus_accounts").fetchone()[0], 0)
 
+    def test_transient_portal_failure_does_not_mark_a_verified_account_invalid(self):
+        from app.campus_accounts import check_session, create_account
+        from app.db import connect
+        account_id = create_account("已验证账号", "test-cookie", True)
+        with connect() as db:
+            db.execute(
+                "UPDATE campus_accounts SET name='李尚智',real_name='李尚智',session_status='INVALID',"
+                "last_error='Portal API request failed',identity_verified_at=? WHERE id=?",
+                (datetime.now(timezone.utc).isoformat(), account_id),
+            )
+        campus_client = MagicMock()
+        campus_client.identity.side_effect = RuntimeError("Portal API request failed")
+        with patch("app.campus_accounts.create_client", return_value=campus_client):
+            result = check_session(account_id)
+        self.assertTrue(result["valid"])
+        self.assertTrue(result["temporary"])
+        with connect() as db:
+            account = db.execute(
+                "SELECT session_status,last_error,real_name FROM campus_accounts WHERE id=?", (account_id,)
+            ).fetchone()
+        self.assertEqual(account["session_status"], "VALID")
+        self.assertIn("保留上次有效状态", account["last_error"])
+        self.assertEqual(account["real_name"], "李尚智")
+
     def test_location_proof_accepts_fresh_position_and_rejects_replay(self):
         payload = {
             "proof_id": str(uuid.uuid4()),

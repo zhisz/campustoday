@@ -108,8 +108,26 @@ def check_session(account_id):
         status, error = "VALID", None
         result = {"valid": True, "real_name": identity["user_name"], "cached": False}
     except Exception as exc:
-        status, error = "INVALID", _safe_error(exc)
-        result = {"valid": False, "error": error, "cached": False}
+        raw_error = _safe_error(exc)
+        if _is_definitive_auth_failure(exc):
+            status, error = "INVALID", raw_error
+            result = {"valid": False, "error": error, "cached": False}
+        else:
+            previously_valid = account["session_status"] == "VALID" or (
+                bool(account.get("real_name")) and _is_transient_error(account.get("last_error"))
+            )
+            status = "VALID" if previously_valid else "UNKNOWN"
+            error = (
+                "学校接口暂时不可用，已保留上次有效状态"
+                if previously_valid
+                else "学校接口暂时不可用，请稍后重试"
+            )
+            result = {
+                "valid": True if previously_valid else None,
+                "error": error,
+                "cached": False,
+                "temporary": True,
+            }
     with connect() as db:
         db.execute(
             "UPDATE campus_accounts SET session_status=?,last_checked_at=?,last_error=?,updated_at=?,name=COALESCE(?,name),real_name=?,campus_user_id=?,identity_verified_at=? WHERE id=?",
@@ -192,3 +210,23 @@ def _safe_error(exc):
     if any(marker in lowered for marker in ("cookie", "token", "authorization", "session=")):
         return "认证信息无效或已失效"
     return text[:300]
+
+
+def _is_definitive_auth_failure(exc):
+    text = str(exc).strip().lower()
+    return any(marker in text for marker in (
+        "portal session is not logged in",
+        "portal api returned http 401",
+        "portal api returned http 403",
+        "认证信息无效或已失效",
+    ))
+
+
+def _is_transient_error(error):
+    text = str(error or "").strip().lower()
+    return any(marker in text for marker in (
+        "request failed",
+        "timed out",
+        "temporarily",
+        "暂时不可用",
+    ))

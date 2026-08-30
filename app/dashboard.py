@@ -65,7 +65,7 @@ def build_dashboard(account_id=None):
     }
 
     for account in account_rows:
-        result["accounts"].append(_account_view(account, account["session_status"] == "VALID"))
+        result["accounts"].append(_account_view(account))
     if selected:
         session_valid = selected["session_status"] == "VALID"
         try:
@@ -79,11 +79,13 @@ def build_dashboard(account_id=None):
             session_valid = True
         except Exception as exc:
             result["school_error"] = str(exc)
-        result["selected_account"] = _account_view(selected, session_valid)
+        selected_status = "VALID" if session_valid else selected["session_status"]
+        result["selected_account"] = _account_view(selected, selected_status)
         for account in result["accounts"]:
             account["selected"] = account["id"] == selected["id"]
             if account["selected"]:
-                account["session_valid"] = session_valid
+                account["session_status"] = selected_status
+                account["session_valid"] = selected_status == "VALID"
     return result
 
 
@@ -293,16 +295,18 @@ def _history_time(item):
     return "—"
 
 
-def _account_view(account_row, session_valid):
+def _account_view(account_row, session_status=None):
     base_url = os.getenv("CPDAILY_BASE_URL", "https://fdm.jxust.edu.cn")
     cookie = account_row.get("session_cookie", "")
     auth_type = cookie.split("=", 1)[0].strip() if "=" in cookie else "未配置"
+    session_status = session_status or account_row.get("session_status") or "UNKNOWN"
     account = {
         "id": account_row["id"],
         "label": account_row["name"],
         "auto_enabled": bool(account_row["auto_enabled"]),
         "school": "江西理工大学",
-        "session_valid": session_valid,
+        "session_status": session_status,
+        "session_valid": session_status == "VALID",
         "host": urlsplit(base_url).hostname or base_url,
         "auth_type": auth_type,
         "name": "学生端签到接口未提供",
