@@ -90,13 +90,16 @@ def build_dashboard(account_id=None):
 
 
 def invalidate_school_cache(account_id):
+    future = None
     with _school_cache_lock:
         _school_cache.pop(account_id, None)
         _school_retry_after.pop(account_id, None)
         _school_generations[account_id] = _school_generations.get(account_id, 0) + 1
         refresh = _school_refreshes.pop(account_id, None)
         if refresh:
-            refresh["future"].cancel()
+            future = refresh["future"]
+    if future:
+        future.cancel()
 
 
 def _school_data(account, year_month):

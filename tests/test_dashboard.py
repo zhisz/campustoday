@@ -1,4 +1,5 @@
 import unittest
+import threading
 from unittest.mock import MagicMock, patch
 
 from app.dashboard import (
@@ -45,6 +46,39 @@ class DashboardHistoryTest(unittest.TestCase):
         create.assert_called_once_with(account["session_cookie"])
         client.list_today.assert_called_once_with()
         client.month_history.assert_called_once_with("2026-08")
+
+    def test_invalidating_a_queued_refresh_does_not_deadlock(self):
+        gate = threading.Event()
+        started = {201: threading.Event(), 202: threading.Event()}
+
+        def blocked_fetch(account, year_month):
+            if account["id"] in started:
+                started[account["id"]].set()
+                gate.wait(timeout=2)
+            return {"tasks": [], "history": {"rows": []}}
+
+        accounts = [
+            {"id": account_id, "session_cookie": f"MOD_AUTH_CAS={account_id}"}
+            for account_id in (201, 202, 203)
+        ]
+        for account in accounts:
+            invalidate_school_cache(account["id"])
+        with patch("app.dashboard._fetch_school_data", side_effect=blocked_fetch):
+            for account in accounts[:2]:
+                with self.assertRaisesRegex(RuntimeError, "后台刷新"):
+                    _school_data(account, "2026-08")
+            self.assertTrue(started[201].wait(timeout=1))
+            self.assertTrue(started[202].wait(timeout=1))
+            with self.assertRaisesRegex(RuntimeError, "后台刷新"):
+                _school_data(accounts[2], "2026-08")
+
+            invalidator = threading.Thread(target=invalidate_school_cache, args=(203,))
+            invalidator.start()
+            invalidator.join(timeout=1)
+            gate.set()
+            self.assertFalse(invalidator.is_alive(), "queued refresh cancellation deadlocked")
+            _wait_for_school_refresh(201)
+            _wait_for_school_refresh(202)
 
 
 if __name__ == "__main__":
