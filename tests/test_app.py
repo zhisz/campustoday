@@ -104,6 +104,24 @@ class AppTest(unittest.TestCase):
         self.assertIn("保留上次有效状态", account["last_error"])
         self.assertEqual(account["real_name"], "李尚智")
 
+        with connect() as db:
+            db.execute(
+                "UPDATE campus_accounts SET session_status='INVALID',last_checked_at=NULL,"
+                "last_error='Portal API request failed' WHERE id=?",
+                (account_id,),
+            )
+        self.login()
+        with self.client.session_transaction() as current_session:
+            csrf = current_session["csrf"]
+        with patch("app.campus_accounts.create_client", return_value=campus_client):
+            response = self.client.post(
+                f"/accounts/{account_id}/check",
+                data={"csrf": csrf},
+                follow_redirects=True,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("学校接口暂时不可用", response.get_data(as_text=True))
+
     def test_location_proof_accepts_fresh_position_and_rejects_replay(self):
         payload = {
             "proof_id": str(uuid.uuid4()),

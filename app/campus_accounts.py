@@ -124,6 +124,7 @@ def check_session(account_id):
             )
             result = {
                 "valid": True if previously_valid else None,
+                "real_name": account.get("real_name"),
                 "error": error,
                 "cached": False,
                 "temporary": True,
