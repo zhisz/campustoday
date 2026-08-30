@@ -191,14 +191,26 @@ def migrate():
         # could record the same task more than once, so a unique index would make
         # an otherwise healthy production database fail to start.
         db.execute("DROP INDEX IF EXISTS idx_checkins_account_task_once")
+        db.execute("DROP TRIGGER IF EXISTS trg_checkins_account_task_once")
         db.executescript("""
         CREATE TRIGGER IF NOT EXISTS trg_checkins_account_task_once
         BEFORE INSERT ON checkins
         WHEN NEW.account_id IS NOT NULL
           AND NEW.task_id IS NOT NULL
           AND EXISTS (
-            SELECT 1 FROM checkins
-            WHERE account_id=NEW.account_id AND task_id=NEW.task_id
+            SELECT 1
+            FROM checkins prior
+            LEFT JOIN campus_accounts prior_account ON prior_account.id=prior.account_id
+            LEFT JOIN campus_accounts new_account ON new_account.id=NEW.account_id
+            WHERE prior.task_id=NEW.task_id
+              AND (
+                prior.account_id=NEW.account_id
+                OR (
+                  new_account.campus_user_id IS NOT NULL
+                  AND new_account.campus_user_id!=''
+                  AND prior_account.campus_user_id=new_account.campus_user_id
+                )
+              )
           )
         BEGIN
           SELECT RAISE(IGNORE);

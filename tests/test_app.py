@@ -122,6 +122,12 @@ class AppTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("学校接口暂时不可用", response.get_data(as_text=True))
 
+    def test_unverified_school_account_cannot_enable_automation(self):
+        from app.campus_accounts import create_account, update_account
+        account_id = create_account("待验证", "test-cookie", False)
+        with self.assertRaisesRegex(ValueError, "尚未通过学校身份验证"):
+            update_account(account_id, "待验证", "", True)
+
     def test_location_proof_accepts_fresh_position_and_rejects_replay(self):
         payload = {
             "proof_id": str(uuid.uuid4()),

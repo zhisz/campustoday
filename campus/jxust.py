@@ -193,9 +193,10 @@ class JxustAttendanceClient(AttendanceClient):
             except (UnicodeDecodeError, json.JSONDecodeError):
                 _trip_upstream_circuit()
                 raise ProtocolError("Attendance API returned invalid JSON") from None
-            _mark_upstream_success()
             if not isinstance(envelope, dict) or str(envelope.get("code")) != "0":
+                _trip_upstream_circuit()
                 raise ProtocolError("Attendance API returned a business error")
+            _mark_upstream_success()
             return envelope.get("datas")
 
     def _portal_post(self, path: str):
@@ -238,9 +239,10 @@ class JxustAttendanceClient(AttendanceClient):
             except (UnicodeDecodeError, json.JSONDecodeError):
                 _trip_upstream_circuit()
                 raise ProtocolError("Portal API returned invalid JSON") from None
-            _mark_upstream_success()
             if not isinstance(envelope, dict) or str(envelope.get("code")) != "0":
+                _trip_upstream_circuit()
                 raise ProtocolError("Portal API returned a business error")
+            _mark_upstream_success()
             return envelope.get("datas")
 
 
@@ -279,7 +281,7 @@ def _minimum_request_interval():
         configured = float(os.getenv("CPDAILY_MIN_REQUEST_INTERVAL_SECONDS", "5"))
     except ValueError:
         configured = 5.0
-    return max(0.0, min(configured, 30.0))
+    return max(5.0, min(configured, 30.0))
 
 
 def _trip_upstream_circuit(minimum_delay=None):

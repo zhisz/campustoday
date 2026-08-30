@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from campus.client import create_client
 from .campus_accounts import list_accounts
-from .db import connect
+from .db import connect, get_setting
 
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
@@ -106,6 +106,7 @@ def invalidate_school_cache(account_id):
 def _school_data(account, year_month):
     key = account["id"]
     now = time.monotonic()
+    monitoring = _monitoring_window()
     future = None
     with _school_cache_lock:
         cached = _school_cache.get(key)
@@ -118,8 +119,14 @@ def _school_data(account, year_month):
                 raise RuntimeError(cached["error"])
 
         refresh = _school_refreshes.get(key)
-        refresh_matches = refresh and refresh["year_month"] == year_month and not refresh["future"].done()
-        retry_allowed = now >= _school_retry_after.get(key, 0) and now >= _school_global_retry_after
+        # The refresh remains the single-flight owner until its callback removes
+        # it, including the brief future-done/callback-pending state.
+        refresh_matches = refresh and refresh["year_month"] == year_month
+        retry_allowed = (
+            not monitoring
+            and now >= _school_retry_after.get(key, 0)
+            and now >= _school_global_retry_after
+        )
         if not refresh_matches and retry_allowed:
             generation = _school_generations.get(key, 0)
             future = _school_executor.submit(_fetch_school_data, dict(account), year_month)
@@ -138,7 +145,18 @@ def _school_data(account, year_month):
                 account_id, month, completed
             )
         )
+    if monitoring:
+        raise RuntimeError("签到监测时段内已暂停页面的学校接口刷新")
     raise RuntimeError("学校数据正在后台刷新，请稍后重试")
+
+
+def _monitoring_window():
+    if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
+        return False
+    current = datetime.now(LOCAL_TZ).strftime("%H:%M")
+    start = get_setting("monitor_start", os.getenv("MONITOR_START", "20:00"))
+    end = get_setting("monitor_end", os.getenv("MONITOR_END", "23:30"))
+    return start <= current <= end
 
 
 def _fetch_school_data(account, year_month):

@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -43,7 +44,7 @@ def poll():
     if not _upstream_ready():
         log_event("POLL_DEFERRED", "School API is in temporary backoff", "WARNING")
         return
-    accounts = [account for account in list_accounts(include_cookie=True) if account["auto_enabled"]]
+    accounts = _eligible_accounts()
     for account in accounts:
         try:
             client = create_client(account["session_cookie"], account_device(account), purpose="scheduler")
@@ -93,7 +94,7 @@ def _run_scheduled_task(account_id, task_id):
             if not _upstream_ready():
                 raise RuntimeError("School API is in temporary backoff")
             account = get_account(account_id, include_cookie=True)
-            if not account or not account["auto_enabled"] or not enabled() or not monitoring_window():
+            if not account or not account["auto_enabled"] or not enabled() or not monitoring_window() or not _identity_can_submit(account):
                 return
             if os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true" or _already_attempted(account_id, task_id):
                 return
@@ -261,7 +262,31 @@ def _temporary_upstream_failure(exc):
         "request failed", "timed out", "temporary backoff", "temporarily",
         "http 429", "http 5", "connection",
         "熔断", "限流", "过于频繁", "invalid json",
+        "business error", "unexpected shape",
     ))
+
+
+def _eligible_accounts():
+    all_accounts = list_accounts(include_cookie=True)
+    accounts = [account for account in all_accounts if account["auto_enabled"]]
+    identity_counts = Counter(str(account.get("campus_user_id") or "").strip() for account in all_accounts)
+    return [
+        account for account in accounts
+        if account.get("session_status") == "VALID"
+        and str(account.get("campus_user_id") or "").strip()
+        and identity_counts[str(account["campus_user_id"]).strip()] == 1
+    ]
+
+
+def _identity_can_submit(account):
+    identity = str(account.get("campus_user_id") or "").strip()
+    if account.get("session_status") != "VALID" or not identity:
+        return False
+    with connect() as db:
+        return db.execute(
+            "SELECT COUNT(*) FROM campus_accounts WHERE campus_user_id=?",
+            (identity,),
+        ).fetchone()[0] == 1
 
 
 def _upstream_ready():
@@ -314,7 +339,7 @@ def start_scheduler():
 
 def _loop():
     global _next_run
-    interval = max(1, int(os.getenv("QUERY_INTERVAL_MINUTES", "5"))) * 60
+    interval = max(5, int(os.getenv("QUERY_INTERVAL_MINUTES", "5"))) * 60
     while True:
         _next_run = datetime.now(timezone.utc) + timedelta(seconds=interval)
         threading.Event().wait(interval)

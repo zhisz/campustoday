@@ -47,7 +47,8 @@ def create_account(name, session_cookie, auto_enabled, device=None, owner_user_i
             raise ValueError(f"最多可添加 {MAX_ACCOUNTS} 个签到账号")
         cursor = db.execute(
             "INSERT INTO campus_accounts(name,session_cookie,auto_enabled,created_at,updated_at,device_id,app_version,device_model,system_name,system_version,owner_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (name, session_cookie, int(auto_enabled), at, at, device["device_id"], device["app_version"], device["device_model"], device["system_name"], device["system_version"], owner_user_id),
+            # New cookies must be identity-verified before automation can run.
+            (name, session_cookie, 0, at, at, device["device_id"], device["app_version"], device["device_model"], device["system_name"], device["system_version"], owner_user_id),
         )
         return cursor.lastrowid
 
@@ -64,6 +65,12 @@ def update_account(account_id, name, session_cookie, auto_enabled, device=None):
     device_values.update({key: value for key, value in (device or {}).items() if value is not None})
     device = _validate_device(device_values)
     cookie_changed = cookie != existing["session_cookie"]
+    if auto_enabled:
+        if cookie_changed:
+            raise ValueError("更换 Cookie 后需先重新检测会话，才能开启自动签到")
+        error = automation_eligibility_error(existing)
+        if error:
+            raise ValueError(error)
     with connect() as db:
         db.execute(
             "UPDATE campus_accounts SET name=?,session_cookie=?,auto_enabled=?,session_status=?,last_checked_at=?,last_error=?,updated_at=?,device_id=?,app_version=?,device_model=?,system_name=?,system_version=?,real_name=?,campus_user_id=?,identity_verified_at=? WHERE id=?",
@@ -87,6 +94,19 @@ def update_account(account_id, name, session_cookie, auto_enabled, device=None):
             ),
         )
     return True
+
+
+def automation_eligibility_error(account):
+    if not account or account.get("session_status") != "VALID" or not str(account.get("campus_user_id") or "").strip():
+        return "账号尚未通过学校身份验证，不能开启自动签到"
+    with connect() as db:
+        count = db.execute(
+            "SELECT COUNT(*) FROM campus_accounts WHERE campus_user_id=?",
+            (account["campus_user_id"],),
+        ).fetchone()[0]
+    if count != 1:
+        return "同一学校账号被重复添加，已禁止自动签到，请保留一个账号"
+    return None
 
 
 def delete_account(account_id):

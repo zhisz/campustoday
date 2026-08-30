@@ -279,7 +279,10 @@ def account_update(account_id):
     enabled = (request.get_json(silent=True) or {}).get("auto_enabled")
     if not isinstance(enabled, bool):
         return _json_error("auto_enabled 必须是布尔值")
-    update_account(account_id, account["name"], "", enabled)
+    try:
+        update_account(account_id, account["name"], "", enabled)
+    except ValueError as exc:
+        return _json_error(str(exc), 409)
     return jsonify(account=_account_summary(get_account(account_id)))
 
 

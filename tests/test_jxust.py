@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from campus.attendance import AttendanceTask
 from campus.device import DeviceProfile
-from campus.jxust import JxustAttendanceClient, ProtocolError, _reset_upstream_gate_for_tests
+from campus.jxust import JxustAttendanceClient, ProtocolError, _minimum_request_interval, _reset_upstream_gate_for_tests
 
 
 class FakeResponse:
@@ -130,6 +130,10 @@ class JxustClientTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "SESSION_COOKIE"):
                 JxustAttendanceClient()
 
+    def test_production_interval_has_a_hard_five_second_floor(self):
+        with patch.dict(os.environ, {"CPDAILY_MIN_REQUEST_INTERVAL_SECONDS": "0"}):
+            self.assertEqual(_minimum_request_interval(), 5.0)
+
     def test_background_requests_are_strictly_serialized_and_spaced(self):
         envelope = {
             "code": "0", "datas": {
@@ -160,7 +164,7 @@ class JxustClientTest(unittest.TestCase):
             except Exception as exc:
                 errors.append(exc)
 
-        with patch.dict(os.environ, {"CPDAILY_MIN_REQUEST_INTERVAL_SECONDS": "0.05"}), \
+        with patch("campus.jxust._minimum_request_interval", return_value=0.05), \
              patch("urllib.request.OpenerDirector.open", side_effect=opened):
             threads = [threading.Thread(target=request) for _ in range(2)]
             for thread in threads:

@@ -44,6 +44,25 @@ class DatabaseMigrationTest(unittest.TestCase):
                     )
                     self.assertEqual(cursor.rowcount, 0)
 
+                    account_values = ("student", "cookie", 0, "now", "now", "same-identity")
+                    first = migrated.execute(
+                        "INSERT INTO campus_accounts(name,session_cookie,auto_enabled,created_at,updated_at,campus_user_id) VALUES(?,?,?,?,?,?)",
+                        account_values,
+                    ).lastrowid
+                    second = migrated.execute(
+                        "INSERT INTO campus_accounts(name,session_cookie,auto_enabled,created_at,updated_at,campus_user_id) VALUES(?,?,?,?,?,?)",
+                        account_values,
+                    ).lastrowid
+                    migrated.execute(
+                        "INSERT INTO checkins(date,task_id,status,created_at,updated_at,account_id) VALUES('2026-08-30','identity-task','SUCCESS','now','now',?)",
+                        (first,),
+                    )
+                    duplicate_identity = migrated.execute(
+                        "INSERT OR IGNORE INTO checkins(date,task_id,status,created_at,updated_at,account_id) VALUES('2026-08-30','identity-task','ATTEMPT_STARTED','now','now',?)",
+                        (second,),
+                    )
+                    self.assertEqual(duplicate_identity.rowcount, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,16 +4,24 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
-from app.scheduler import _process_task, _schedule_task, _scheduled_tasks, poll
+from app.scheduler import _eligible_accounts, _process_task, _schedule_task, _scheduled_tasks, poll
 from campus.attendance import AttendanceTask
 from campus.jxust import UpstreamUnavailable
 
 
 class MultiAccountSchedulerTest(unittest.TestCase):
+    def test_duplicate_school_identity_is_excluded_before_any_request(self):
+        accounts = [
+            {"id": 1, "auto_enabled": 1, "session_status": "VALID", "campus_user_id": "same"},
+            {"id": 2, "auto_enabled": 0, "session_status": "VALID", "campus_user_id": "same"},
+        ]
+        with patch("app.scheduler.list_accounts", return_value=accounts):
+            self.assertEqual(_eligible_accounts(), [])
+
     def test_poll_only_creates_clients_for_enabled_accounts(self):
         accounts = [
-            {"id": 1, "name": "enabled", "session_cookie": "a=1", "auto_enabled": 1},
-            {"id": 2, "name": "disabled", "session_cookie": "b=2", "auto_enabled": 0},
+            {"id": 1, "name": "enabled", "session_cookie": "a=1", "auto_enabled": 1, "session_status": "VALID", "campus_user_id": "student-1"},
+            {"id": 2, "name": "disabled", "session_cookie": "b=2", "auto_enabled": 0, "session_status": "VALID", "campus_user_id": "student-2"},
         ]
         client = MagicMock()
         client.list_today.return_value = []
@@ -33,8 +41,8 @@ class MultiAccountSchedulerTest(unittest.TestCase):
 
     def test_poll_stops_after_the_first_transport_failure(self):
         accounts = [
-            {"id": 1, "name": "first", "session_cookie": "a=1", "auto_enabled": 1},
-            {"id": 2, "name": "second", "session_cookie": "b=2", "auto_enabled": 1},
+            {"id": 1, "name": "first", "session_cookie": "a=1", "auto_enabled": 1, "session_status": "VALID", "campus_user_id": "student-1"},
+            {"id": 2, "name": "second", "session_cookie": "b=2", "auto_enabled": 1, "session_status": "VALID", "campus_user_id": "student-2"},
         ]
         client = MagicMock()
         client.list_today.side_effect = RuntimeError("Attendance API request failed")

@@ -249,13 +249,17 @@ def create_app():
     @protected
     def campus_account_create():
         try:
+            requested_auto = request.form.get("auto_enabled") == "true"
             account_id = create_account(
                 request.form.get("name"),
                 request.form.get("session_cookie"),
-                request.form.get("auto_enabled") == "true",
+                False,
                 _device_form(request.form),
             )
             result = check_session(account_id)
+            if requested_auto and result.get("valid"):
+                account = get_account(account_id, include_cookie=True)
+                update_account(account_id, account["name"], "", True)
             if result.get("temporary"):
                 flash(f"账号已添加；{result['error']}")
             else:
@@ -308,7 +312,11 @@ def create_app():
         account = get_account(account_id, include_cookie=True)
         if not account:
             abort(404)
-        update_account(account_id, account["name"], "", request.form.get("enabled") == "true")
+        try:
+            update_account(account_id, account["name"], "", request.form.get("enabled") == "true")
+        except ValueError as exc:
+            flash(str(exc))
+            return redirect(url_for("dashboard", account=account_id))
         log_event("CAMPUS_ACCOUNT_AUTOMATION", f"Campus account {account_id} automation updated")
         flash("该账号的自动签到已更新")
         return redirect(url_for("dashboard", account=account_id))
