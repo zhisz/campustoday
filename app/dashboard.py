@@ -57,7 +57,7 @@ def build_dashboard(account_id=None):
     for account in account_rows:
         result["accounts"].append(_account_view(account))
     if selected:
-        task_records = list_account_tasks(selected["id"])
+        task_records = _deduplicate_task_records(list_account_tasks(selected["id"]), automatic_submits)
         pending = [record for record in task_records if _task_record_pending(record)]
         pending.sort(key=lambda record: record.get("start_time") or record.get("last_seen_at") or "")
         result["upcoming"] = [_cached_task_view(record) for record in pending]
@@ -81,6 +81,39 @@ def build_dashboard(account_id=None):
                 account["session_status"] = selected_status
                 account["session_valid"] = selected_status == "VALID"
     return result
+
+
+def _deduplicate_task_records(records, automatic_submits=None):
+    """Return one terminal-preferred row for each logical school task.
+
+    The school can issue a new signInstanceWid after submission while keeping
+    the stable signWid, date, name, and time window unchanged.  Dashboard and
+    mobile counts must treat those rows as one attendance event.
+    """
+    automatic_ids = set(automatic_submits or {})
+    selected = {}
+    for record in records:
+        task_id = str(record.get("task_id") or "")
+        stable_id = str(record.get("sign_wid") or "").strip()
+        record_date = _record_date(record)
+        if stable_id and record_date:
+            key = (
+                "logical", stable_id, record_date,
+                str(record.get("task_name") or "").strip(),
+                str(record.get("start_time") or "").strip(),
+                str(record.get("end_time") or "").strip(),
+            )
+        else:
+            key = ("instance", task_id)
+        candidate_rank = (
+            int(bool(record.get("completed"))),
+            int(task_id in automatic_ids),
+            str(record.get("last_seen_at") or ""),
+        )
+        existing = selected.get(key)
+        if existing is None or candidate_rank > existing[0]:
+            selected[key] = (candidate_rank, record)
+    return [item[1] for item in selected.values()]
 
 
 def invalidate_school_cache(account_id):

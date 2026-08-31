@@ -143,6 +143,25 @@ def _upsert_rows(account_id, rows, seen_at, sync_kind):
                 "synced_at=excluded.synced_at,task_count=excluded.task_count,last_error=NULL,updated_at=excluded.updated_at",
                 (account_id, seen_at, len(rows), None, seen_at),
             )
+        # The school may replace signInstanceWid when the same attendance task
+        # moves from pending to signed.  Collapse only an older pending row
+        # whose stable task identity, date, and time window all match the
+        # completed row.  Keeping the completed instance id also preserves the
+        # link to the automatic check-in record.
+        db.execute(
+            "DELETE FROM account_task_records WHERE account_id=? AND completed=0 "
+            "AND NULLIF(sign_wid,'') IS NOT NULL AND EXISTS("
+            "SELECT 1 FROM account_task_records AS completed_record "
+            "WHERE completed_record.account_id=account_task_records.account_id "
+            "AND completed_record.completed=1 "
+            "AND completed_record.sign_wid=account_task_records.sign_wid "
+            "AND completed_record.record_date=account_task_records.record_date "
+            "AND completed_record.task_name=account_task_records.task_name "
+            "AND completed_record.start_time=account_task_records.start_time "
+            "AND completed_record.end_time=account_task_records.end_time"
+            ")",
+            (account_id,),
+        )
         db.execute(
             "DELETE FROM account_task_records WHERE account_id=? AND id NOT IN ("
             "SELECT id FROM account_task_records WHERE account_id=? "

@@ -283,6 +283,67 @@ class AccountTaskStoreTest(unittest.TestCase):
         self.assertEqual(rows[0]["publisher"], "teacher")
         self.assertEqual(rows[0]["signed_time"], "2026-08-30T21:01:02+08:00")
 
+    def test_completed_replacement_instance_removes_matching_pending_record(self):
+        upsert_account_tasks(
+            self.first_account,
+            [
+                self._task(
+                    "pending-instance",
+                    sign_wid="stable-sign-template",
+                    name="每日晚查寝",
+                    start_time="2026-08-31 22:00",
+                    end_time="2026-08-31 23:00",
+                    status="unSignedTasks",
+                )
+            ],
+        )
+        upsert_account_tasks(
+            self.first_account,
+            [
+                self._task(
+                    "completed-instance",
+                    sign_wid="stable-sign-template",
+                    name="每日晚查寝",
+                    start_time="2026-08-31 22:00",
+                    end_time="2026-08-31 23:00",
+                    completed=True,
+                    status="signedTasks",
+                )
+            ],
+        )
+
+        rows = list_account_tasks(self.first_account)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["task_id"], "completed-instance")
+        self.assertEqual(rows[0]["completed"], 1)
+
+    def test_same_template_with_a_different_time_window_is_not_collapsed(self):
+        upsert_account_tasks(
+            self.first_account,
+            [
+                self._task(
+                    "morning-instance",
+                    sign_wid="shared-template",
+                    name="每日查寝",
+                    start_time="2026-08-31 08:00",
+                    end_time="2026-08-31 09:00",
+                    status="unSignedTasks",
+                ),
+                self._task(
+                    "evening-instance",
+                    sign_wid="shared-template",
+                    name="每日查寝",
+                    start_time="2026-08-31 22:00",
+                    end_time="2026-08-31 23:00",
+                    completed=True,
+                    status="signedTasks",
+                ),
+            ],
+        )
+
+        rows = list_account_tasks(self.first_account)
+        self.assertEqual({row["task_id"] for row in rows}, {"morning-instance", "evening-instance"})
+
     def test_empty_month_history_preserves_existing_records(self):
         upsert_account_tasks(
             self.first_account,

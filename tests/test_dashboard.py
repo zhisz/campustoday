@@ -183,6 +183,35 @@ class DatabaseBackedDashboardTest(unittest.TestCase):
         self.assertEqual(first["cloud_updated_at"], "尚未同步")
         self.assertIsNone(first["school_error"])
 
+    def test_replacement_instance_is_one_history_row_and_one_signed_count(self):
+        now = datetime.now(LOCAL_TZ)
+        start = self._school_time(now - timedelta(minutes=10))
+        end = self._school_time(now - timedelta(minutes=1))
+        upsert_account_tasks(
+            self.first_account,
+            [
+                AttendanceTask("signed-old", "stable-template", "每日晚查寝", start, end, True, True, "signedTasks"),
+                AttendanceTask("signed-new", "stable-template", "每日晚查寝", start, end, True, True, "signedTasks"),
+            ],
+        )
+        at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with connect() as db:
+            db.execute(
+                "INSERT INTO checkins("
+                "date,task_id,task_name,start_time,end_time,submit_time,status,response_message,"
+                "created_at,updated_at,account_id,account_name"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (now.strftime("%Y-%m-%d"), "signed-new", "每日晚查寝", start, end, at,
+                 "SUCCESS", "confirmed", at, at, self.first_account, "一号账号"),
+            )
+
+        dashboard = build_dashboard(self.first_account)
+
+        self.assertEqual(len(dashboard["school_history"]), 1)
+        self.assertEqual(dashboard["school_history"][0]["id"], "signed-new")
+        self.assertTrue(dashboard["school_history"][0]["automatic"])
+        self.assertEqual(dashboard["school_signed_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
