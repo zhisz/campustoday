@@ -14,6 +14,7 @@ from .db import connect
 from .location import match_task_place, normalize_for_task, verify_location
 from .task_store import (
     history_sync_due,
+    latest_task_sync,
     record_task_sync_error,
     upsert_account_history,
     upsert_account_tasks,
@@ -28,6 +29,7 @@ _submission_lock = threading.Lock()
 _upstream_lock = threading.Lock()
 _upstream_retry_after = 0
 UPSTREAM_RETRY_SECONDS = 300
+OFF_WINDOW_SYNC_MINUTES = 60
 
 
 def enabled() -> bool:
@@ -45,13 +47,16 @@ def poll():
     set_settings({"last_check": now_iso()})
     if not enabled():
         return
-    if not monitoring_window():
-        return
+    in_monitoring_window = monitoring_window()
     if not _upstream_ready():
         log_event("POLL_DEFERRED", "School API is in temporary backoff", "WARNING")
         return
     accounts = _sync_accounts()
-    history_budget = True
+    if not in_monitoring_window:
+        accounts = [account for account in accounts if _off_window_sync_due(account["id"])]
+        if not accounts:
+            return
+    history_budget = in_monitoring_window
     history_month = datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).strftime("%Y-%m")
     for account in accounts:
         try:
@@ -60,8 +65,9 @@ def poll():
             upsert_account_tasks(account["id"], tasks)
             _mark_account_poll_success(account["id"])
             _clear_upstream_backoff()
-            log_event("POLL_OK", f"Account {account['name']}: {len(tasks)} task(s) returned")
-            if history_budget and history_sync_due(account["id"], _history_sync_interval_minutes()):
+            event = "POLL_OK" if in_monitoring_window else "OFF_WINDOW_SYNC_OK"
+            log_event(event, f"Account {account['name']}: {len(tasks)} task(s) returned")
+            if in_monitoring_window and history_budget and history_sync_due(account["id"], _history_sync_interval_minutes()):
                 # Monthly history is useful for the cloud timeline, but it is
                 # deliberately limited to one account per scheduler cycle.
                 history_budget = False
@@ -69,6 +75,8 @@ def poll():
                 history_count = upsert_account_history(account["id"], history, history_month)
                 _clear_upstream_backoff()
                 log_event("HISTORY_SYNC_OK", f"Account {account['name']}: {history_count} history record(s) cached")
+            if not in_monitoring_window:
+                continue
             if not account["auto_enabled"] or os.getenv("CPDAILY_SUBMIT_ENABLED", "false").lower() != "true":
                 continue
             for task in tasks:
@@ -330,6 +338,11 @@ def _history_sync_interval_minutes():
     except ValueError:
         value = 360
     return max(30, min(value, 1440))
+
+
+def _off_window_sync_due(account_id):
+    last_sync = _parse_time(latest_task_sync(account_id))
+    return not last_sync or datetime.now(timezone.utc) - last_sync >= timedelta(minutes=OFF_WINDOW_SYNC_MINUTES)
 
 
 def _identity_can_submit(account):

@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from app.scheduler import (
     _eligible_accounts,
+    _off_window_sync_due,
     _process_task,
     _schedule_task,
     _scheduled_tasks,
@@ -17,6 +18,47 @@ from campus.jxust import UpstreamUnavailable
 
 
 class MultiAccountSchedulerTest(unittest.TestCase):
+    def test_off_window_sync_reads_due_task_lists_only(self):
+        accounts = [
+            {"id": 1, "name": "due", "session_cookie": "a=1", "auto_enabled": 1, "session_status": "VALID", "campus_user_id": "student-1"},
+            {"id": 2, "name": "fresh", "session_cookie": "b=2", "auto_enabled": 1, "session_status": "VALID", "campus_user_id": "student-2"},
+        ]
+        client = MagicMock()
+        client.list_today.return_value = []
+        with patch("app.scheduler.set_settings"), \
+             patch("app.scheduler.enabled", return_value=True), \
+             patch("app.scheduler.monitoring_window", return_value=False), \
+             patch("app.scheduler._upstream_ready", return_value=True), \
+             patch("app.scheduler.list_accounts", return_value=accounts), \
+             patch("app.scheduler._off_window_sync_due", side_effect=[True, False]), \
+             patch("app.scheduler.create_client", return_value=client) as create, \
+             patch("app.scheduler.upsert_account_tasks") as upsert_tasks, \
+             patch("app.scheduler.upsert_account_history") as upsert_history, \
+             patch("app.scheduler.history_sync_due") as history_due, \
+             patch("app.scheduler._schedule_task") as schedule_task, \
+             patch("app.scheduler.record_task_sync_error"), \
+             patch("app.scheduler._mark_account_poll_success") as mark_success, \
+             patch("app.scheduler._mark_account_poll_failure"), \
+             patch("app.scheduler.log_event") as log_event:
+            poll()
+        create.assert_called_once_with("a=1", purpose="scheduler")
+        client.list_today.assert_called_once_with()
+        upsert_tasks.assert_called_once_with(1, [])
+        mark_success.assert_called_once_with(1)
+        upsert_history.assert_not_called()
+        history_due.assert_not_called()
+        schedule_task.assert_not_called()
+        self.assertEqual(log_event.call_args.args[0], "OFF_WINDOW_SYNC_OK")
+
+    def test_off_window_sync_due_is_hourly_per_account(self):
+        now = datetime.now(ZoneInfo("UTC"))
+        with patch("app.scheduler.latest_task_sync", return_value=(now - timedelta(minutes=59)).isoformat()):
+            self.assertFalse(_off_window_sync_due(1))
+        with patch("app.scheduler.latest_task_sync", return_value=(now - timedelta(minutes=61)).isoformat()):
+            self.assertTrue(_off_window_sync_due(1))
+        with patch("app.scheduler.latest_task_sync", return_value=None):
+            self.assertTrue(_off_window_sync_due(1))
+
     def test_duplicate_school_identity_is_excluded_before_any_request(self):
         accounts = [
             {"id": 1, "auto_enabled": 1, "session_status": "VALID", "campus_user_id": "same"},
