@@ -30,6 +30,7 @@ _upstream_lock = threading.Lock()
 _upstream_retry_after = 0
 UPSTREAM_RETRY_SECONDS = 300
 OFF_WINDOW_SYNC_MINUTES = 60
+OFF_WINDOW_FIRST_SCAN_HOUR = 1
 TASK_DETECTION_DELAY_SECONDS = 15
 
 
@@ -342,8 +343,25 @@ def _history_sync_interval_minutes():
 
 
 def _off_window_sync_due(account_id):
+    if not _off_window_scan_started() or _has_cached_today_attendance_task(account_id):
+        return False
     last_sync = _parse_time(latest_task_sync(account_id))
     return not last_sync or datetime.now(timezone.utc) - last_sync >= timedelta(minutes=OFF_WINDOW_SYNC_MINUTES)
+
+
+def _off_window_scan_started():
+    local_now = datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Shanghai")))
+    return local_now.hour >= OFF_WINDOW_FIRST_SCAN_HOUR
+
+
+def _has_cached_today_attendance_task(account_id):
+    today = datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).strftime("%Y-%m-%d")
+    with connect() as db:
+        rows = db.execute(
+            "SELECT task_name FROM account_task_records WHERE account_id=? AND record_date=?",
+            (account_id, today),
+        ).fetchall()
+    return any(is_attendance_task(row["task_name"]) for row in rows)
 
 
 def _identity_can_submit(account):

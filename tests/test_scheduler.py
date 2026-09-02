@@ -52,12 +52,35 @@ class MultiAccountSchedulerTest(unittest.TestCase):
 
     def test_off_window_sync_due_is_hourly_per_account(self):
         now = datetime.now(ZoneInfo("UTC"))
-        with patch("app.scheduler.latest_task_sync", return_value=(now - timedelta(minutes=59)).isoformat()):
+        common = (
+            patch("app.scheduler._off_window_scan_started", return_value=True),
+            patch("app.scheduler._has_cached_today_attendance_task", return_value=False),
+        )
+        with common[0], common[1], patch("app.scheduler.latest_task_sync", return_value=(now - timedelta(minutes=59)).isoformat()):
             self.assertFalse(_off_window_sync_due(1))
-        with patch("app.scheduler.latest_task_sync", return_value=(now - timedelta(minutes=61)).isoformat()):
+        with patch("app.scheduler._off_window_scan_started", return_value=True), \
+             patch("app.scheduler._has_cached_today_attendance_task", return_value=False), \
+             patch("app.scheduler.latest_task_sync", return_value=(now - timedelta(minutes=61)).isoformat()):
             self.assertTrue(_off_window_sync_due(1))
-        with patch("app.scheduler.latest_task_sync", return_value=None):
+        with patch("app.scheduler._off_window_scan_started", return_value=True), \
+             patch("app.scheduler._has_cached_today_attendance_task", return_value=False), \
+             patch("app.scheduler.latest_task_sync", return_value=None):
             self.assertTrue(_off_window_sync_due(1))
+
+    def test_off_window_sync_waits_until_one_am(self):
+        with patch("app.scheduler._off_window_scan_started", return_value=False), \
+             patch("app.scheduler._has_cached_today_attendance_task") as has_task, \
+             patch("app.scheduler.latest_task_sync") as latest:
+            self.assertFalse(_off_window_sync_due(1))
+        has_task.assert_not_called()
+        latest.assert_not_called()
+
+    def test_off_window_sync_stops_after_today_attendance_is_cached(self):
+        with patch("app.scheduler._off_window_scan_started", return_value=True), \
+             patch("app.scheduler._has_cached_today_attendance_task", return_value=True), \
+             patch("app.scheduler.latest_task_sync") as latest:
+            self.assertFalse(_off_window_sync_due(1))
+        latest.assert_not_called()
 
     def test_duplicate_school_identity_is_excluded_before_any_request(self):
         accounts = [
