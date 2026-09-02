@@ -261,7 +261,7 @@ class MultiAccountSchedulerTest(unittest.TestCase):
                 _process_task(client, account, task)
         mark_unknown.assert_called_once_with(account["id"], task.task_id, client.submit.side_effect)
 
-    def test_task_is_scheduled_one_minute_after_its_opening_time(self):
+    def test_task_is_scheduled_fifteen_seconds_after_its_opening_time(self):
         start = datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(minutes=10)
         task = AttendanceTask("task-1", "sign-1", "每日晚查寝", start.isoformat(), "", False, True)
         account = {"id": 7, "name": "student"}
@@ -270,8 +270,8 @@ class MultiAccountSchedulerTest(unittest.TestCase):
         with patch("app.scheduler.threading.Timer", return_value=timer) as factory, patch("app.scheduler.log_event"):
             _schedule_task(account, task)
         delay = factory.call_args.args[0]
-        self.assertGreater(delay, 650)
-        self.assertLess(delay, 670)
+        self.assertGreater(delay, 605)
+        self.assertLess(delay, 625)
         self.assertTrue(timer.daemon)
         timer.start.assert_called_once_with()
         _scheduled_tasks.clear()

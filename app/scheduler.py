@@ -30,6 +30,7 @@ _upstream_lock = threading.Lock()
 _upstream_retry_after = 0
 UPSTREAM_RETRY_SECONDS = 300
 OFF_WINDOW_SYNC_MINUTES = 60
+TASK_DETECTION_DELAY_SECONDS = 15
 
 
 def enabled() -> bool:
@@ -102,7 +103,7 @@ def _schedule_task(account, task):
     now = datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Shanghai")))
     task_start = _parse_time(task.start_time)
     detection_base = task_start if task_start and task_start > now else now
-    run_at = detection_base + timedelta(seconds=60)
+    run_at = detection_base + timedelta(seconds=TASK_DETECTION_DELAY_SECONDS)
     delay = max(1, (run_at - now).total_seconds())
     with _scheduled_lock:
         if key in _scheduled_tasks:
